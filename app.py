@@ -82,6 +82,11 @@ def sanitize_filename(filename):
         return f"{sanitized_name}.{ext}"
     return sanitized_name
 
+def reset_database_connection():
+    """Reinicia la conexión a la base de datos limpiando el cache."""
+    st.cache_resource.clear()
+    st.rerun()
+
 def test_database_connection():
     """Prueba la conexión a la base de datos y muestra el estado."""
     conn = init_db_connection()
@@ -101,13 +106,25 @@ def test_database_connection():
             st.success("✅ Conexión a la base de datos exitosa")
             return True
         except Exception as e:
-            st.error(f"❌ Error al probar la conexión: {e}")
+            error_str = str(e)
+            if "current transaction is aborted" in error_str:
+                st.error("❌ Transacción de base de datos corrupta.")
+                if st.button("🔄 Reiniciar Conexión"):
+                    reset_database_connection()
+                st.markdown("""
+                **Solución:**
+                1. Haga clic en "🔄 Reiniciar Conexión" arriba
+                2. O recargue la página completamente
+                """)
+            else:
+                st.error(f"❌ Error al probar la conexión: {e}")
             return False
 
 def run_procedure(proc_name, params=None):
     """Ejecuta un procedimiento almacenado y devuelve True si tiene éxito."""
     conn = init_db_connection()
     if conn is None: return False
+    
     try:
         with conn.cursor() as cur:
             if params:
@@ -120,8 +137,20 @@ def run_procedure(proc_name, params=None):
             conn.commit()
         return True
     except Exception as e:
-        conn.rollback()
         error_str = str(e)
+        
+        try:
+            conn.rollback()
+        except:
+            # Si rollback falla, limpiar cache
+            if "current transaction is aborted" in error_str:
+                st.cache_resource.clear()
+        
+        # Manejo especial para transacciones abortadas
+        if "current transaction is aborted" in error_str:
+            st.cache_resource.clear()
+            st.warning("⚠️ Conexión de base de datos reiniciada. Intente la operación nuevamente.")
+            return False
         
         # Manejo especial para errores de tabla documentos
         if proc_name == "crear_documento" and ("does not exist" in error_str or "violates not-null constraint" in error_str):
@@ -154,20 +183,29 @@ def run_query(query, params=None):
     """Ejecuta una consulta SQL y devuelve los resultados como DataFrame."""
     conn = init_db_connection()
     if conn is None: return pd.DataFrame()
+    
     try:
         with conn.cursor() as cur:
             cur.execute(query, params)
-            conn.commit()  # Commit para evitar transacciones abortadas
             if cur.description:
                 columns = [desc[0] for desc in cur.description]
-                return pd.DataFrame(cur.fetchall(), columns=columns)
+                result = pd.DataFrame(cur.fetchall(), columns=columns)
             else:
-                return pd.DataFrame()
+                result = pd.DataFrame()
+            conn.commit()  # Commit solo si todo salió bien
+            return result
     except Exception as e:
-        conn.rollback()  # Rollback en caso de error
-        if "current transaction is aborted" in str(e):
+        error_str = str(e)
+        try:
+            conn.rollback()  # Intentar rollback
+        except:
+            pass  # Si rollback falla, limpiar cache
+        
+        if "current transaction is aborted" in error_str:
             st.cache_resource.clear()
-        st.error(f"Error al ejecutar la función: {e}")
+            st.warning("⚠️ Conexión reiniciada debido a transacción corrupta. Intente de nuevo.")
+        else:
+            st.error(f"Error al ejecutar la función: {e}")
         return pd.DataFrame()
 
 def get_clients():
@@ -325,6 +363,11 @@ st.sidebar.markdown("Seleccione un Módulo")
 page = st.sidebar.radio("Módulos", ["Dashboard", "Crear Nuevo Caso", "Gestión Documental", "Gestionar Clientes y Abogados"], label_visibility="hidden")
 
 st.sidebar.markdown("---")
+
+# Botón de reinicio de conexión en la barra lateral
+if st.sidebar.button("🔄 Reiniciar Conexión DB"):
+    reset_database_connection()
+
 st.sidebar.info(
     """
     **LegalIA v1.0**
