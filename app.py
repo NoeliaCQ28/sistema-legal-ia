@@ -130,7 +130,7 @@ if page == "Dashboard":
                     st.markdown(f"**Descripción:**\n{case['descripcion']}")
 
                     # Módulo de IA para Resumen
-                    if model and st.button("Generar Resumen con IA", key=f"sum_{case['id']}"):
+                    if model and st.button("Generar Resumen con IA", key=f"sum_{case['id_caso']}"):
                         with st.spinner("La IA está analizando el caso..."):
                             try:
                                 response = model.generate_content(
@@ -147,17 +147,17 @@ if page == "Dashboard":
                         "Cambiar estado",
                         ["Abierto", "En Progreso", "Cerrado", "Archivado"],
                         index=["Abierto", "En Progreso", "Cerrado", "Archivado"].index(case['estado']),
-                        key=f"status_{case['id']}"
+                        key=f"status_{case['id_caso']}"
                     )
-                    if st.button("Actualizar Estado", key=f"upd_{case['id']}"):
-                        run_procedure("actualizar_estado_caso", (case['id'], new_status))
+                    if st.button("Actualizar Estado", key=f"upd_{case['id_caso']}"):
+                        run_procedure("actualizar_estado_caso", (case['id_caso'], new_status))
                         st.toast("Estado actualizado.")
                         st.experimental_rerun()
                 
                 # Sección de Documentos
                 st.markdown("---")
                 st.subheader("Documentos del Caso")
-                documents = get_documents_for_case(case['id'])
+                documents = get_documents_for_case(case['id_caso'])
                 if documents.empty:
                     st.write("No hay documentos asociados a este caso.")
                 else:
@@ -183,12 +183,10 @@ elif page == "Crear Nuevo Caso":
         case_description = st.text_area("Descripción Detallada")
 
         clients = get_clients()
-        # **CORRECCIÓN**: Usar la columna correcta 'id_cliente' en lugar de 'id'
         client_map = dict(zip(clients['nombre_completo'], clients['id_cliente']))
         selected_client_name = st.selectbox("Seleccionar Cliente", client_map.keys())
 
         lawyers = get_lawyers()
-        # **CORRECCIÓN**: Usar la columna correcta 'id_abogado' en lugar de 'id'
         lawyer_map = dict(zip(lawyers['nombre_completo'], lawyers['id_abogado']))
         selected_lawyer_name = st.selectbox("Asignar Abogado", lawyer_map.keys())
 
@@ -211,7 +209,7 @@ elif page == "Gestión Documental":
     if cases.empty:
         st.warning("No hay casos registrados. Por favor, cree un caso antes de subir documentos.")
     else:
-        case_map = dict(zip(cases['titulo'], cases['id']))
+        case_map = dict(zip(cases['titulo'], cases['id_caso']))
         selected_case_title = st.selectbox("Seleccione el Caso al que pertenece el documento", case_map.keys())
         
         uploaded_file = st.file_uploader("Subir nuevo documento", type=['pdf', 'docx', 'jpg', 'png', 'txt'])
