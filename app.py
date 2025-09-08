@@ -334,6 +334,93 @@ def check_file_exists_in_supabase(storage_path):
     except:
         return False
 
+def update_document_path(id_documento, new_path):
+    """Actualiza la ruta de un documento específico."""
+    try:
+        conn = init_db_connection()
+        if conn is None:
+            return False
+        
+        with conn.cursor() as cur:
+            # Verificar si usar ruta_storage o url_almacenamiento
+            cur.execute("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = 'documentos'
+                AND column_name IN ('ruta_storage', 'url_almacenamiento')
+            """)
+            columns = [row[0] for row in cur.fetchall()]
+            
+            if 'ruta_storage' in columns:
+                column_name = 'ruta_storage'
+            elif 'url_almacenamiento' in columns:
+                column_name = 'url_almacenamiento'
+            else:
+                return False
+            
+            # Actualizar la ruta
+            update_query = f"UPDATE documentos SET {column_name} = %s WHERE id_documento = %s"
+            cur.execute(update_query, (new_path, id_documento))
+            conn.commit()
+            
+            return cur.rowcount > 0
+            
+    except Exception as e:
+        st.error(f"Error al actualizar ruta: {e}")
+        return False
+
+def fix_missing_file_paths():
+    """Intenta arreglar documentos que no tienen ruta de archivo."""
+    st.info("🔧 Buscando y corrigiendo documentos sin ruta...")
+    
+    try:
+        # Buscar documentos sin ruta
+        query = """
+        SELECT id_documento, nombre_archivo, id_caso,
+               COALESCE(ruta_storage, url_almacenamiento) as ruta_actual
+        FROM documentos 
+        WHERE (ruta_storage IS NULL OR ruta_storage = '') 
+           AND (url_almacenamiento IS NULL OR url_almacenamiento = '')
+        """
+        
+        missing_paths = run_query(query)
+        
+        if missing_paths.empty:
+            st.success("✅ Todos los documentos tienen ruta de archivo")
+            return
+        
+        st.warning(f"⚠️ Encontrados {len(missing_paths)} documentos sin ruta")
+        
+        # Intentar reconstruir las rutas
+        fixed_count = 0
+        for idx, doc in missing_paths.iterrows():
+            # Intentar generar la ruta esperada
+            expected_path = f"{doc['id_caso']}/{doc['nombre_archivo']}"
+            
+            # Verificar si el archivo existe en esa ruta
+            if check_file_exists_in_supabase(expected_path):
+                # Actualizar la ruta en la base de datos
+                update_query = """
+                UPDATE documentos 
+                SET ruta_storage = %s 
+                WHERE id_documento = %s
+                """
+                
+                # Para UPDATE, usar una función específica
+                success = update_document_path(doc['id_documento'], expected_path)
+                if success:
+                    fixed_count += 1
+                    st.success(f"✅ Arreglado: {doc['nombre_archivo']} → {expected_path}")
+            else:
+                st.error(f"❌ No encontrado: {doc['nombre_archivo']} (esperado en {expected_path})")
+        
+        if fixed_count > 0:
+            st.success(f"🎉 Se arreglaron {fixed_count} documentos")
+        else:
+            st.warning("⚠️ No se pudieron arreglar automáticamente los documentos")
+            
+    except Exception as e:
+        st.error(f"Error al arreglar rutas: {e}")
+
 def create_document_fallback(nombre_archivo, descripcion, id_caso, ruta_storage):
     """Función de respaldo para crear documentos cuando el procedimiento falla."""
     
@@ -627,9 +714,42 @@ elif page == "Gestión Documental":
     if not test_database_connection():
         st.stop()
     
-    # Botón de diagnóstico
-    if st.button("🔍 Diagnosticar tabla 'documentos'"):
-        check_documentos_table_structure()
+    # Botones de diagnóstico
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("🔍 Diagnosticar tabla 'documentos'"):
+            check_documentos_table_structure()
+    with col2:
+        if st.button("📋 Ver documentos guardados"):
+            # Mostrar todos los documentos con sus rutas
+            docs_query = """
+            SELECT id_documento, nombre_archivo, 
+                   CASE 
+                       WHEN ruta_storage IS NOT NULL AND ruta_storage != '' THEN ruta_storage
+                       WHEN url_almacenamiento IS NOT NULL AND url_almacenamiento != '' THEN url_almacenamiento
+                       ELSE 'Sin ruta'
+                   END as ruta_archivo,
+                   id_caso
+            FROM documentos 
+            ORDER BY id_documento DESC
+            LIMIT 10;
+            """
+            try:
+                docs_result = run_query(docs_query)
+                if not docs_result.empty:
+                    st.dataframe(docs_result, use_container_width=True)
+                    
+                    # Mostrar cuántos documentos sin ruta hay
+                    sin_ruta = docs_result[docs_result['ruta_archivo'] == 'Sin ruta'].shape[0]
+                    if sin_ruta > 0:
+                        st.warning(f"⚠️ {sin_ruta} documentos sin ruta de archivo")
+                else:
+                    st.info("No hay documentos en la base de datos")
+            except Exception as e:
+                st.error(f"Error al consultar documentos: {e}")
+    with col3:
+        if st.button("🔧 Arreglar rutas faltantes"):
+            fix_missing_file_paths()
 
     cases = get_cases_detailed()
     if cases.empty:
