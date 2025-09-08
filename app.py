@@ -121,7 +121,18 @@ def run_procedure(proc_name, params=None):
         return True
     except Exception as e:
         conn.rollback()
-        st.error(f"Error al ejecutar el procedimiento: {e}")
+        error_str = str(e)
+        
+        # Manejo especial para el error de columna descripcion
+        if "descripcion" in error_str and "does not exist" in error_str and proc_name == "crear_documento":
+            st.error("❌ La tabla 'documentos' necesita ser actualizada. Ejecute el script SQL completo.")
+            st.markdown("""
+            **Solución:**
+            1. Ejecute el script `bd.sql` completo en su base de datos PostgreSQL
+            2. O ejecute manualmente: `ALTER TABLE documentos ADD COLUMN descripcion TEXT;`
+            """)
+        else:
+            st.error(f"Error al ejecutar el procedimiento: {e}")
         return False
 
 def run_query(query, params=None):
@@ -171,6 +182,24 @@ def get_cases_detailed():
 
 def get_documents_for_case(case_id):
     return run_query("SELECT id_documento, nombre_archivo, descripcion, fecha_subida, ruta_storage FROM documentos WHERE id_caso = %s ORDER BY fecha_subida DESC;", (case_id,))
+
+def create_document_fallback(nombre_archivo, descripcion, id_caso, ruta_storage):
+    """Función de respaldo para crear documentos cuando el procedimiento falla."""
+    try:
+        # Intentar con descripción
+        query = "INSERT INTO documentos (nombre_archivo, descripcion, id_caso, ruta_storage) VALUES (%s, %s, %s, %s)"
+        result = run_query(query, (nombre_archivo, descripcion, id_caso, ruta_storage))
+        return True
+    except:
+        try:
+            # Intentar sin descripción si la columna no existe
+            query = "INSERT INTO documentos (nombre_archivo, id_caso, ruta_storage) VALUES (%s, %s, %s)"
+            result = run_query(query, (nombre_archivo, id_caso, ruta_storage))
+            st.warning("⚠️ Documento guardado sin descripción. Actualice la base de datos para incluir descripciones.")
+            return True
+        except Exception as e:
+            st.error(f"Error al guardar documento: {e}")
+            return False
 
 # --- Interfaz de Usuario (Frontend) ---
 
@@ -358,7 +387,13 @@ elif page == "Gestión Documental":
                         with st.spinner(f"Subiendo '{original_file_name}'..."):
                             supabase_client.storage.from_("documentos_casos").upload(file=file_bytes, path=storage_path, file_options={"content-type": uploaded_file.type})
                             # Guardar con el nombre original en la base de datos para mostrar al usuario
-                            if run_procedure("crear_documento", (original_file_name, doc_description, case_id, storage_path)):
+                            success = run_procedure("crear_documento", (original_file_name, doc_description, case_id, storage_path))
+                            
+                            # Si el procedimiento falla, usar la función de fallback
+                            if not success:
+                                success = create_document_fallback(original_file_name, doc_description, case_id, storage_path)
+                            
+                            if success:
                                 st.success(f"¡Documento '{original_file_name}' subido y asociado al caso '{selected_case_title}'!")
                                 if original_file_name != sanitized_file_name:
                                     st.info(f"Nota: El archivo se guardó como '{sanitized_file_name}' en el almacenamiento para compatibilidad.")

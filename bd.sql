@@ -61,11 +61,16 @@ BEGIN
     CREATE TABLE IF NOT EXISTS documentos (
         id_documento SERIAL PRIMARY KEY,
         nombre_archivo VARCHAR(255),
-        descripcion TEXT,
         fecha_subida TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         id_caso INT,
         ruta_storage TEXT
     );
+    
+    -- Asegurar que la columna 'descripcion' exista
+    IF NOT EXISTS (SELECT FROM pg_attribute WHERE attrelid = 'documentos'::regclass AND attname = 'descripcion') THEN
+        ALTER TABLE documentos ADD COLUMN descripcion TEXT;
+    END IF;
+    
 END $$;
 
 
