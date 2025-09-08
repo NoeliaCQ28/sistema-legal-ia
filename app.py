@@ -4,6 +4,8 @@ import pandas as pd
 import google.generativeai as genai
 from supabase import create_client, Client
 import io
+import re
+import uuid
 
 # --- Configuración de la Página ---
 st.set_page_config(
@@ -48,6 +50,31 @@ except Exception as e:
     model = None
 
 # --- Funciones de Lógica de Negocio (Backend) ---
+
+def sanitize_filename(filename):
+    """Sanitiza el nombre del archivo para ser compatible con Supabase Storage."""
+    # Separar nombre y extensión
+    name_parts = filename.rsplit('.', 1)
+    if len(name_parts) == 2:
+        name, ext = name_parts
+    else:
+        name, ext = filename, ""
+    
+    # Reemplazar caracteres problemáticos
+    # Supabase Storage acepta: letras, números, guiones, guiones bajos, puntos
+    sanitized_name = re.sub(r'[^a-zA-Z0-9._-]', '_', name)
+    
+    # Evitar nombres que empiecen o terminen con guión/guión bajo
+    sanitized_name = sanitized_name.strip('_-')
+    
+    # Evitar nombres vacíos
+    if not sanitized_name:
+        sanitized_name = f"archivo_{uuid.uuid4().hex[:8]}"
+    
+    # Reconstruir el nombre con la extensión
+    if ext:
+        return f"{sanitized_name}.{ext}"
+    return sanitized_name
 
 def test_database_connection():
     """Prueba la conexión a la base de datos y muestra el estado."""
@@ -313,19 +340,25 @@ elif page == "Gestión Documental":
             if uploaded_file is not None and selected_case_title:
                 case_id = case_map[selected_case_title]
                 file_bytes = uploaded_file.getvalue()
-                file_name = uploaded_file.name
-                storage_path = f"{case_id}/{file_name}"
+                original_file_name = uploaded_file.name
+                
+                # Sanitizar el nombre del archivo para Supabase Storage
+                sanitized_file_name = sanitize_filename(original_file_name)
+                storage_path = f"{case_id}/{sanitized_file_name}"
 
                 supabase_client = init_supabase_client()
                 if supabase_client:
                     try:
-                        with st.spinner(f"Subiendo '{file_name}'..."):
+                        with st.spinner(f"Subiendo '{original_file_name}'..."):
                             supabase_client.storage.from_("documentos_casos").upload(file=file_bytes, path=storage_path, file_options={"content-type": uploaded_file.type})
-                            if run_procedure("crear_documento", (file_name, doc_description, case_id, storage_path)):
-                                st.success(f"¡Documento '{file_name}' subido y asociado al caso '{selected_case_title}'!")
+                            # Guardar con el nombre original en la base de datos para mostrar al usuario
+                            if run_procedure("crear_documento", (original_file_name, doc_description, case_id, storage_path)):
+                                st.success(f"¡Documento '{original_file_name}' subido y asociado al caso '{selected_case_title}'!")
+                                if original_file_name != sanitized_file_name:
+                                    st.info(f"Nota: El archivo se guardó como '{sanitized_file_name}' en el almacenamiento para compatibilidad.")
                     except Exception as e:
                         if "duplicate" in str(e):
-                             st.warning(f"Un archivo con el nombre '{file_name}' ya existe. Por favor, cambie el nombre del archivo.")
+                             st.warning(f"Un archivo con el nombre '{sanitized_file_name}' ya existe. Por favor, cambie el nombre del archivo.")
                         else:
                             st.error(f"Error al subir el archivo: {e}")
             else:
