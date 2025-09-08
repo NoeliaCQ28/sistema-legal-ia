@@ -38,9 +38,9 @@ def init_supabase_client():
         key = st.secrets["supabase"]["key"]
         supabase = create_client(url, key)
         
-        # Verificar que tenemos los permisos correctos
-        if "service_role" not in key:
-            st.warning("⚠️ Recomendación: Use el Service Role Key para operaciones de storage")
+        # Verificación silenciosa de permisos
+        # if "service_role" not in key:
+        #     st.warning("⚠️ Recomendación: Use el Service Role Key para operaciones de storage")
         
         return supabase
     except Exception as e:
@@ -606,8 +606,12 @@ if page == "Dashboard":
                 else:
                     supabase_client = init_supabase_client()
                     for idx, doc in documents.iterrows():
-                        doc_col1, doc_col2 = st.columns([4, 1])
-                        with doc_col1:
+                        # Usar un contenedor para cada documento
+                        with st.container():
+                            st.markdown("---")
+                            
+                            doc_col1, doc_col2 = st.columns([3, 1])
+                            with doc_col1:
                             # Manejar formato de fecha para documentos
                             try:
                                 if hasattr(doc['fecha_subida'], 'strftime'):
@@ -647,24 +651,20 @@ if page == "Dashboard":
                                             if response and 'signedURL' in response:
                                                 signed_url = response['signedURL']
                                                 
-                                                # Botones de acción
-                                                col_btn1, col_btn2 = st.columns(2)
-                                                with col_btn1:
-                                                    st.link_button("📥 Descargar", signed_url, help="Descargar archivo")
-                                                with col_btn2:
-                                                    # Botón para vista previa (solo para PDFs)
-                                                    if doc['nombre_archivo'].lower().endswith('.pdf'):
-                                                        if st.button("👁️ Vista Previa", key=f"preview_{doc.get('id_documento', 'unknown')}", help="Ver PDF"):
-                                                            st.markdown(f"""
-                                                            <iframe src="{signed_url}" width="100%" height="600" style="border: 1px solid #ccc;">
-                                                                <p>Su navegador no soporta iframes. <a href="{signed_url}" target="_blank">Haga clic aquí para abrir el PDF</a>.</p>
-                                                            </iframe>
-                                                            """, unsafe_allow_html=True)
-                                                    else:
-                                                        st.link_button("👁️ Ver", signed_url, help="Abrir archivo en nueva pestaña")
+                                                # Botón de descarga
+                                                st.link_button("📥 Descargar", signed_url, help="Descargar archivo", use_container_width=True)
                                                 
                                             else:
                                                 st.error(f"❌ No se pudo generar URL: {response}")
+                                                
+                                        # Vista previa automática para PDFs (fuera de las columnas)
+                                        if file_exists and response and 'signedURL' in response and doc['nombre_archivo'].lower().endswith('.pdf'):
+                                            with st.expander("👁️ Vista Previa del PDF", expanded=False):
+                                                st.markdown(f"""
+                                                <iframe src="{response['signedURL']}" width="100%" height="600" style="border: 1px solid #ccc;">
+                                                    <p>Su navegador no soporta iframes. <a href="{response['signedURL']}" target="_blank">Haga clic aquí para abrir el PDF</a>.</p>
+                                                </iframe>
+                                                """, unsafe_allow_html=True)
                                                 
                                 except Exception as e:
                                     error_msg = str(e)
@@ -743,80 +743,81 @@ elif page == "Gestión Documental":
     if not test_database_connection():
         st.stop()
     
-    # Botones de diagnóstico
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        if st.button("🔍 Diagnosticar tabla 'documentos'"):
-            check_documentos_table_structure()
-    with col2:
-        if st.button("📋 Ver documentos guardados"):
-            # Mostrar todos los documentos con sus rutas
-            docs_query = """
-            SELECT id_documento, nombre_archivo, 
-                   CASE 
-                       WHEN ruta_storage IS NOT NULL AND ruta_storage != '' THEN ruta_storage
-                       WHEN url_almacenamiento IS NOT NULL AND url_almacenamiento != '' THEN url_almacenamiento
-                       ELSE 'Sin ruta'
-                   END as ruta_archivo,
-                   id_caso
-            FROM documentos 
-            ORDER BY id_documento DESC
-            LIMIT 10;
-            """
-            try:
-                docs_result = run_query(docs_query)
-                if not docs_result.empty:
-                    st.dataframe(docs_result, use_container_width=True)
-                    
-                    # Mostrar cuántos documentos sin ruta hay
-                    sin_ruta = docs_result[docs_result['ruta_archivo'] == 'Sin ruta'].shape[0]
-                    if sin_ruta > 0:
-                        st.warning(f"⚠️ {sin_ruta} documentos sin ruta de archivo")
-                else:
-                    st.info("No hay documentos en la base de datos")
-            except Exception as e:
-                st.error(f"Error al consultar documentos: {e}")
-    with col3:
-        if st.button("🔧 Arreglar rutas faltantes"):
-            fix_missing_file_paths()
-
-    # Botón adicional para listar archivos en Supabase
-    if st.button("📂 Ver archivos en Supabase Storage"):
-        supabase_client = init_supabase_client()
-        if supabase_client:
-            try:
-                st.info("🔍 Listando archivos en bucket 'documentos_casos'...")
-                
-                # Listar archivos en el root del bucket
-                files = supabase_client.storage.from_("documentos_casos").list()
-                
-                if files:
-                    st.success(f"📁 Encontrados {len(files)} elementos:")
-                    for file_item in files:
-                        st.write(f"- {file_item}")
+    # Herramientas de diagnóstico (colapsadas por defecto)
+    with st.expander("🔧 Herramientas de Diagnóstico", expanded=False):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if st.button("🔍 Diagnosticar tabla 'documentos'"):
+                check_documentos_table_structure()
+        with col2:
+            if st.button("📋 Ver documentos guardados"):
+                # Mostrar todos los documentos con sus rutas
+                docs_query = """
+                SELECT id_documento, nombre_archivo, 
+                       CASE 
+                           WHEN ruta_storage IS NOT NULL AND ruta_storage != '' THEN ruta_storage
+                           WHEN url_almacenamiento IS NOT NULL AND url_almacenamiento != '' THEN url_almacenamiento
+                           ELSE 'Sin ruta'
+                       END as ruta_archivo,
+                       id_caso
+                FROM documentos 
+                ORDER BY id_documento DESC
+                LIMIT 10;
+                """
+                try:
+                    docs_result = run_query(docs_query)
+                    if not docs_result.empty:
+                        st.dataframe(docs_result, use_container_width=True)
                         
-                        # Si es una carpeta, listar su contenido
-                        if file_item.get('name') and '.' not in file_item.get('name', ''):
-                            try:
-                                folder_files = supabase_client.storage.from_("documentos_casos").list(path=file_item['name'])
-                                for sub_file in folder_files:
-                                    st.write(f"  └─ {file_item['name']}/{sub_file.get('name', sub_file)}")
-                            except:
-                                pass
-                else:
-                    st.warning("📁 El bucket está vacío o no se pueden listar archivos")
+                        # Mostrar cuántos documentos sin ruta hay
+                        sin_ruta = docs_result[docs_result['ruta_archivo'] == 'Sin ruta'].shape[0]
+                        if sin_ruta > 0:
+                            st.warning(f"⚠️ {sin_ruta} documentos sin ruta de archivo")
+                    else:
+                        st.info("No hay documentos en la base de datos")
+                except Exception as e:
+                    st.error(f"Error al consultar documentos: {e}")
+        with col3:
+            if st.button("🔧 Arreglar rutas faltantes"):
+                fix_missing_file_paths()
+
+        # Botón adicional para listar archivos en Supabase
+        if st.button("📂 Ver archivos en Supabase Storage"):
+            supabase_client = init_supabase_client()
+            if supabase_client:
+                try:
+                    st.info("🔍 Listando archivos en bucket 'documentos_casos'...")
                     
-            except Exception as e:
-                st.error(f"❌ Error al listar archivos: {e}")
-                if "401" in str(e) or "403" in str(e):
-                    st.markdown("""
-                    **Causa probable:** Necesita Service Role Key para listar archivos
-                    1. Vaya a Supabase → Settings → API
-                    2. Copie el Service Role Key (no el Anon Key) 
-                    3. Actualice sus secrets de Streamlit
-                    """)
-        else:
-            st.error("❌ Cliente Supabase no disponible")
+                    # Listar archivos en el root del bucket
+                    files = supabase_client.storage.from_("documentos_casos").list()
+                    
+                    if files:
+                        st.success(f"📁 Encontrados {len(files)} elementos:")
+                        for file_item in files:
+                            st.write(f"- {file_item}")
+                            
+                            # Si es una carpeta, listar su contenido
+                            if file_item.get('name') and '.' not in file_item.get('name', ''):
+                                try:
+                                    folder_files = supabase_client.storage.from_("documentos_casos").list(path=file_item['name'])
+                                    for sub_file in folder_files:
+                                        st.write(f"  └─ {file_item['name']}/{sub_file.get('name', sub_file)}")
+                                except:
+                                    pass
+                    else:
+                        st.warning("📁 El bucket está vacío o no se pueden listar archivos")
+                        
+                except Exception as e:
+                    st.error(f"❌ Error al listar archivos: {e}")
+                    if "401" in str(e) or "403" in str(e):
+                        st.markdown("""
+                        **Causa probable:** Necesita Service Role Key para listar archivos
+                        1. Vaya a Supabase → Settings → API
+                        2. Copie el Service Role Key (no el Anon Key) 
+                        3. Actualice sus secrets de Streamlit
+                        """)
+            else:
+                st.error("❌ Cliente Supabase no disponible")
 
     cases = get_cases_detailed()
     if cases.empty:
