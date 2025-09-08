@@ -57,7 +57,6 @@ def run_procedure(proc_name, params=None):
         with conn.cursor() as cur:
             cur.callproc(proc_name, params)
             conn.commit()
-        # st.toast(f"Procedimiento '{proc_name}' ejecutado con éxito.")
     except Exception as e:
         conn.rollback()
         st.error(f"Error al ejecutar el procedimiento: {e}")
@@ -170,7 +169,6 @@ if page == "Dashboard":
                         with doc_col2:
                             if supabase_client:
                                 try:
-                                    # Crear URL de descarga segura y temporal (válida por 60 segundos)
                                     signed_url = supabase_client.storage.from_("documentos_casos").create_signed_url(doc['ruta_storage'], 60)
                                     st.link_button("Descargar", signed_url['signedURL'])
                                 except Exception as e:
@@ -185,10 +183,12 @@ elif page == "Crear Nuevo Caso":
         case_description = st.text_area("Descripción Detallada")
 
         clients = get_clients()
+        # **CORRECCIÓN**: Usar la columna correcta 'id_cliente' en lugar de 'id'
         client_map = dict(zip(clients['nombre_completo'], clients['id_cliente']))
         selected_client_name = st.selectbox("Seleccionar Cliente", client_map.keys())
 
         lawyers = get_lawyers()
+        # **CORRECCIÓN**: Usar la columna correcta 'id_abogado' en lugar de 'id'
         lawyer_map = dict(zip(lawyers['nombre_completo'], lawyers['id_abogado']))
         selected_lawyer_name = st.selectbox("Asignar Abogado", lawyer_map.keys())
 
@@ -223,16 +223,13 @@ elif page == "Gestión Documental":
                 file_bytes = uploaded_file.getvalue()
                 file_name = uploaded_file.name
                 
-                # Crear una ruta única para evitar colisiones de nombres
                 storage_path = f"{case_id}/{file_name}"
 
                 supabase_client = init_supabase_client()
                 if supabase_client:
                     try:
                         with st.spinner(f"Subiendo '{file_name}'..."):
-                            # Subir el archivo al bucket
                             supabase_client.storage.from_("documentos_casos").upload(file=file_bytes, path=storage_path, file_options={"content-type": uploaded_file.type})
-                            # Guardar la referencia en la base de datos
                             run_procedure("crear_documento", (file_name, doc_description, case_id, storage_path))
                         st.success(f"¡Documento '{file_name}' subido y asociado al caso '{selected_case_title}'!")
                     except Exception as e:
@@ -290,7 +287,6 @@ elif page == "Gestionar Clientes y Abogados":
                 if not all([nombre_abo, apellido_abo, especialidad_abo, email_abo, telefono_abo]):
                     st.error("Todos los campos son obligatorios.")
                 else:
-                    # **CORRECCIÓN**: Usar callproc para procedimientos
                     run_procedure("crear_abogado", (nombre_abo, apellido_abo, especialidad_abo, email_abo, telefono_abo))
                     st.success("¡Abogado guardado con éxito!")
                     st.experimental_rerun()
