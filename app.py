@@ -236,58 +236,51 @@ def get_cases_detailed():
 def get_documents_for_case(case_id):
     """Obtiene documentos de un caso, manejando diferentes nombres de columnas."""
     
-    # Primero verificar qué columnas existen en la tabla
-    structure_query = """
-    SELECT column_name FROM information_schema.columns
-    WHERE table_name = 'documentos'
-    ORDER BY ordinal_position;
-    """
-    
     try:
-        columns_df = run_query(structure_query)
-        if columns_df.empty:
-            return pd.DataFrame()
-        
-        available_columns = columns_df['column_name'].tolist()
-        
-        # Determinar qué columna de ruta usar
-        path_column = None
-        if 'ruta_storage' in available_columns:
-            path_column = 'ruta_storage'
-        elif 'url_almacenamiento' in available_columns:
-            path_column = 'url_almacenamiento'
-        else:
-            st.warning("⚠️ No se encontró columna de ruta de almacenamiento en la tabla documentos")
-            return pd.DataFrame()
-        
-        # Construir query dinámicamente
-        select_columns = []
-        if 'id_documento' in available_columns:
-            select_columns.append('id_documento')
-        if 'nombre_archivo' in available_columns:
-            select_columns.append('nombre_archivo')
-        if 'descripcion' in available_columns:
-            select_columns.append('descripcion')
-        if 'fecha_subida' in available_columns:
-            select_columns.append('fecha_subida')
-        
-        # Agregar la columna de ruta con alias estándar
-        select_columns.append(f"{path_column} as ruta_storage")
-        
-        if not select_columns:
-            return pd.DataFrame()
-        
-        query = f"""
-        SELECT {', '.join(select_columns)}
-        FROM documentos 
-        WHERE id_caso = %s 
-        ORDER BY {('fecha_subida' if 'fecha_subida' in available_columns else 'id_documento')} DESC;
+        # Primero determinar qué columnas existen
+        structure_query = """
+        SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'documentos'
+        AND column_name IN ('ruta_storage', 'url_almacenamiento')
         """
         
-        return run_query(query, (case_id,))
+        columns_result = run_query(structure_query)
+        if columns_result.empty:
+            return pd.DataFrame()
+        
+        available_columns = columns_result['column_name'].tolist()
+        
+        # Usar la columna correcta
+        if 'url_almacenamiento' in available_columns:
+            path_column = 'url_almacenamiento'
+        elif 'ruta_storage' in available_columns:
+            path_column = 'ruta_storage'
+        else:
+            return pd.DataFrame()
+        
+        # Query simple usando la columna correcta
+        query = f"""
+        SELECT 
+            id_documento,
+            nombre_archivo,
+            COALESCE(descripcion, '') as descripcion,
+            fecha_subida,
+            {path_column} as ruta_storage
+        FROM documentos 
+        WHERE id_caso = %s 
+        ORDER BY fecha_subida DESC;
+        """
+        
+        result = run_query(query, (case_id,))
+        
+        # Debug: mostrar información si está vacío
+        if result.empty:
+            st.warning(f"🔍 Debug: No se encontraron documentos para caso {case_id} usando columna '{path_column}'")
+        
+        return result
         
     except Exception as e:
-        st.error(f"Error al obtener documentos: {e}")
+        st.error(f"Error al obtener documentos para caso {case_id}: {e}")
         return pd.DataFrame()
 
 def check_documentos_table_structure():
@@ -591,6 +584,15 @@ if page == "Dashboard":
                 st.markdown("---")
                 st.subheader("Documentos del Caso")
                 documents = get_documents_for_case(case['id_caso'])
+                
+                # Debug temporal: mostrar información sobre la consulta
+                with st.expander("🔍 Debug - Info de documentos", expanded=False):
+                    st.write(f"Caso ID: {case['id_caso']}")
+                    st.write(f"Documentos encontrados: {len(documents)}")
+                    if not documents.empty:
+                        st.write("Columnas disponibles:", list(documents.columns))
+                        st.dataframe(documents, use_container_width=True)
+                
                 if documents.empty:
                     st.write("No hay documentos asociados a este caso.")
                 else:
@@ -611,8 +613,14 @@ if page == "Dashboard":
                             if supabase_client:
                                 try:
                                     # Verificar que tenemos la ruta del storage
-                                    if pd.isna(doc['ruta_storage']) or doc['ruta_storage'] is None:
+                                    ruta_valor = doc.get('ruta_storage', None)
+                                    
+                                    # Debug temporal
+                                    st.write(f"🔍 Debug - Ruta raw: '{ruta_valor}' (tipo: {type(ruta_valor)})")
+                                    
+                                    if pd.isna(ruta_valor) or ruta_valor is None or str(ruta_valor).strip() == '' or str(ruta_valor) == 'nan':
                                         st.error("❌ Sin ruta de archivo")
+                                        st.write(f"Debug: ruta_storage = '{ruta_valor}'")
                                     else:
                                         storage_path = str(doc['ruta_storage']).strip()
                                         
