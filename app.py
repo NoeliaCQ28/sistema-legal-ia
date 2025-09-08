@@ -234,17 +234,61 @@ def get_cases_detailed():
     return run_query("SELECT * FROM obtener_casos_detallados();")
 
 def get_documents_for_case(case_id):
-    # Intentar con ambas posibles columnas de ruta
+    """Obtiene documentos de un caso, manejando diferentes nombres de columnas."""
+    
+    # Primero verificar qué columnas existen en la tabla
+    structure_query = """
+    SELECT column_name FROM information_schema.columns
+    WHERE table_name = 'documentos'
+    ORDER BY ordinal_position;
+    """
+    
     try:
-        return run_query("SELECT id_documento, nombre_archivo, descripcion, fecha_subida, ruta_storage FROM documentos WHERE id_caso = %s ORDER BY fecha_subida DESC;", (case_id,))
-    except:
-        try:
-            # Intentar con url_almacenamiento
-            result = run_query("SELECT id_documento, nombre_archivo, descripcion, fecha_subida, url_almacenamiento as ruta_storage FROM documentos WHERE id_caso = %s ORDER BY fecha_subida DESC;", (case_id,))
-            return result
-        except Exception as e:
-            st.error(f"Error al obtener documentos: {e}")
+        columns_df = run_query(structure_query)
+        if columns_df.empty:
             return pd.DataFrame()
+        
+        available_columns = columns_df['column_name'].tolist()
+        
+        # Determinar qué columna de ruta usar
+        path_column = None
+        if 'ruta_storage' in available_columns:
+            path_column = 'ruta_storage'
+        elif 'url_almacenamiento' in available_columns:
+            path_column = 'url_almacenamiento'
+        else:
+            st.warning("⚠️ No se encontró columna de ruta de almacenamiento en la tabla documentos")
+            return pd.DataFrame()
+        
+        # Construir query dinámicamente
+        select_columns = []
+        if 'id_documento' in available_columns:
+            select_columns.append('id_documento')
+        if 'nombre_archivo' in available_columns:
+            select_columns.append('nombre_archivo')
+        if 'descripcion' in available_columns:
+            select_columns.append('descripcion')
+        if 'fecha_subida' in available_columns:
+            select_columns.append('fecha_subida')
+        
+        # Agregar la columna de ruta con alias estándar
+        select_columns.append(f"{path_column} as ruta_storage")
+        
+        if not select_columns:
+            return pd.DataFrame()
+        
+        query = f"""
+        SELECT {', '.join(select_columns)}
+        FROM documentos 
+        WHERE id_caso = %s 
+        ORDER BY {('fecha_subida' if 'fecha_subida' in available_columns else 'id_documento')} DESC;
+        """
+        
+        return run_query(query, (case_id,))
+        
+    except Exception as e:
+        st.error(f"Error al obtener documentos: {e}")
+        return pd.DataFrame()
 
 def check_documentos_table_structure():
     """Verifica la estructura de la tabla documentos y muestra información útil."""
@@ -276,6 +320,19 @@ def check_documentos_table_structure():
     except Exception as e:
         st.error(f"Error al verificar estructura: {e}")
         return pd.DataFrame()
+
+def check_file_exists_in_supabase(storage_path):
+    """Verifica si un archivo existe en Supabase Storage."""
+    try:
+        supabase_client = init_supabase_client()
+        if not supabase_client:
+            return False
+        
+        # Intentar listar el archivo específico
+        response = supabase_client.storage.from_("documentos_casos").list(path=storage_path)
+        return len(response) > 0
+    except:
+        return False
 
 def create_document_fallback(nombre_archivo, descripcion, id_caso, ruta_storage):
     """Función de respaldo para crear documentos cuando el procedimiento falla."""
@@ -466,10 +523,59 @@ if page == "Dashboard":
                         with doc_col2:
                             if supabase_client:
                                 try:
-                                    signed_url = supabase_client.storage.from_("documentos_casos").create_signed_url(doc['ruta_storage'], 60)
-                                    st.link_button("Descargar", signed_url['signedURL'])
+                                    # Verificar que tenemos la ruta del storage
+                                    if pd.isna(doc['ruta_storage']) or doc['ruta_storage'] is None:
+                                        st.error("❌ Sin ruta de archivo")
+                                    else:
+                                        storage_path = str(doc['ruta_storage']).strip()
+                                        
+                                        # Verificar si el archivo existe antes de crear el enlace
+                                        file_exists = check_file_exists_in_supabase(storage_path)
+                                        
+                                        if not file_exists:
+                                            st.warning("⚠️ Archivo no encontrado en storage")
+                                            if st.button(f"🔍 Debug", key=f"debug_{doc.get('id_documento', 'unknown')}"):
+                                                st.json({
+                                                    "archivo": doc.get('nombre_archivo', 'N/A'),
+                                                    "ruta_storage": storage_path,
+                                                    "bucket": "documentos_casos",
+                                                    "existe": file_exists
+                                                })
+                                        else:
+                                            # Intentar crear URL firmada
+                                            response = supabase_client.storage.from_("documentos_casos").create_signed_url(storage_path, 60)
+                                            
+                                            if response and 'signedURL' in response:
+                                                st.link_button("Descargar", response['signedURL'])
+                                            else:
+                                                st.error(f"❌ Respuesta inválida: {response}")
+                                                
                                 except Exception as e:
-                                    st.error("No se pudo generar el enlace.")
+                                    error_msg = str(e)
+                                    st.error(f"❌ Error: {error_msg}")
+                                    
+                                    # Información de diagnóstico expandida
+                                    if st.button(f"🔍 Debug", key=f"debug_{doc.get('id_documento', 'unknown')}"):
+                                        
+                                        # Verificar configuración de Supabase
+                                        config_info = {
+                                            "archivo": doc.get('nombre_archivo', 'N/A'),
+                                            "ruta_storage": doc.get('ruta_storage', 'N/A'),
+                                            "error": error_msg,
+                                            "bucket": "documentos_casos"
+                                        }
+                                        
+                                        # Verificar si es problema de autenticación
+                                        if "401" in error_msg or "unauthorized" in error_msg.lower():
+                                            config_info["probable_causa"] = "Service Role Key requerido para acceso a storage"
+                                        elif "403" in error_msg or "forbidden" in error_msg.lower():
+                                            config_info["probable_causa"] = "Políticas RLS bloquean el acceso"
+                                        elif "404" in error_msg or "not found" in error_msg.lower():
+                                            config_info["probable_causa"] = "Archivo o bucket no encontrado"
+                                        
+                                        st.json(config_info)
+                            else:
+                                st.error("❌ Cliente Supabase no disponible")
 
 
 # --- Página de Creación de Casos ---
