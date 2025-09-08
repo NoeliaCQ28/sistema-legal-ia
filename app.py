@@ -124,20 +124,28 @@ def run_procedure(proc_name, params=None):
         error_str = str(e)
         
         # Manejo especial para errores de tabla documentos
-        if ("descripcion" in error_str or "id_caso" in error_str) and "does not exist" in error_str and proc_name == "crear_documento":
-            st.error("❌ La tabla 'documentos' tiene estructura incorrecta.")
-            st.markdown("""
-            **Solución RÁPIDA:**
-            1. Ejecute el script `fix_documentos_table.sql` en su base de datos
-            2. Use el botón "🔍 Diagnosticar tabla 'documentos'" para verificar la estructura
-            
-            **Comando manual:**
-            ```sql
-            ALTER TABLE documentos ADD COLUMN IF NOT EXISTS descripcion TEXT;
-            ALTER TABLE documentos ADD COLUMN IF NOT EXISTS id_caso INT;
-            ALTER TABLE documentos ADD COLUMN IF NOT EXISTS ruta_storage TEXT;
-            ```
-            """)
+        if proc_name == "crear_documento" and ("does not exist" in error_str or "violates not-null constraint" in error_str):
+            if "url_almacenamiento" in error_str:
+                st.error("❌ La tabla 'documentos' usa 'url_almacenamiento' en lugar de 'ruta_storage'.")
+                st.markdown("""
+                **Solución:**
+                1. Ejecute el script `fix_crear_documento_procedure.sql` para corregir el procedimiento
+                2. O use el botón "🔍 Diagnosticar tabla" para ver la estructura actual
+                """)
+            else:
+                st.error("❌ La tabla 'documentos' tiene estructura incorrecta.")
+                st.markdown("""
+                **Solución RÁPIDA:**
+                1. Ejecute el script `fix_documentos_table.sql` en su base de datos
+                2. Use el botón "🔍 Diagnosticar tabla 'documentos'" para verificar la estructura
+                
+                **Comando manual:**
+                ```sql
+                ALTER TABLE documentos ADD COLUMN IF NOT EXISTS descripcion TEXT;
+                ALTER TABLE documentos ADD COLUMN IF NOT EXISTS id_caso INT;
+                ALTER TABLE documentos ADD COLUMN IF NOT EXISTS ruta_storage TEXT;
+                ```
+                """)
         else:
             st.error(f"Error al ejecutar el procedimiento: {e}")
         return False
@@ -188,13 +196,29 @@ def get_cases_detailed():
     return run_query("SELECT * FROM obtener_casos_detallados();")
 
 def get_documents_for_case(case_id):
-    return run_query("SELECT id_documento, nombre_archivo, descripcion, fecha_subida, ruta_storage FROM documentos WHERE id_caso = %s ORDER BY fecha_subida DESC;", (case_id,))
+    # Intentar con ambas posibles columnas de ruta
+    try:
+        return run_query("SELECT id_documento, nombre_archivo, descripcion, fecha_subida, ruta_storage FROM documentos WHERE id_caso = %s ORDER BY fecha_subida DESC;", (case_id,))
+    except:
+        try:
+            # Intentar con url_almacenamiento
+            result = run_query("SELECT id_documento, nombre_archivo, descripcion, fecha_subida, url_almacenamiento as ruta_storage FROM documentos WHERE id_caso = %s ORDER BY fecha_subida DESC;", (case_id,))
+            return result
+        except Exception as e:
+            st.error(f"Error al obtener documentos: {e}")
+            return pd.DataFrame()
 
 def check_documentos_table_structure():
     """Verifica la estructura de la tabla documentos y muestra información útil."""
     try:
+        # Consulta más detallada incluyendo constraints
         query = """
-        SELECT column_name, data_type, is_nullable
+        SELECT 
+            column_name, 
+            data_type, 
+            is_nullable,
+            column_default,
+            CASE WHEN is_nullable = 'NO' THEN 'Required' ELSE 'Optional' END as required
         FROM information_schema.columns
         WHERE table_name = 'documentos'
         ORDER BY ordinal_position;
@@ -202,7 +226,12 @@ def check_documentos_table_structure():
         result = run_query(query)
         if not result.empty:
             st.info("📋 Estructura actual de la tabla 'documentos':")
-            st.dataframe(result)
+            st.dataframe(result, use_container_width=True)
+            
+            # Mostrar información específica sobre columnas problemáticas
+            required_cols = result[result['is_nullable'] == 'NO']['column_name'].tolist()
+            if required_cols:
+                st.warning(f"⚠️ Columnas requeridas (NOT NULL): {', '.join(required_cols)}")
         else:
             st.error("❌ La tabla 'documentos' no existe")
         return result
@@ -243,10 +272,15 @@ def create_document_fallback(nombre_archivo, descripcion, id_caso, ruta_storage)
         values.append('%s')
         params.append(id_caso)
     
+    # Manejar tanto ruta_storage como url_almacenamiento
     if 'ruta_storage' in available_columns:
         columns.append('ruta_storage')
         values.append('%s')
         params.append(ruta_storage)
+    elif 'url_almacenamiento' in available_columns:
+        columns.append('url_almacenamiento')
+        values.append('%s')
+        params.append(ruta_storage)  # Usar el mismo valor
     
     if 'fecha_subida' in available_columns:
         columns.append('fecha_subida')
