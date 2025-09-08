@@ -68,20 +68,38 @@ def run_query(query, params=None):
     try:
         with conn.cursor() as cur:
             cur.execute(query, params)
+            conn.commit()  # Commit para evitar transacciones abortadas
             if cur.description:
                 columns = [desc[0] for desc in cur.description]
                 return pd.DataFrame(cur.fetchall(), columns=columns)
             else:
                 return pd.DataFrame()
     except Exception as e:
+        conn.rollback()  # Rollback en caso de error
         st.error(f"Error al ejecutar la función: {e}")
         return pd.DataFrame()
 
 def get_clients():
-    return run_query("SELECT id_cliente, nombre || ' ' || apellido as nombre_completo FROM clientes ORDER BY nombre;")
+    try:
+        result = run_query("SELECT id_cliente, nombre || ' ' || apellido as nombre_completo FROM clientes ORDER BY nombre;")
+        if result.empty:
+            # Retornar DataFrame vacío con columnas esperadas si no hay datos
+            return pd.DataFrame(columns=['id_cliente', 'nombre_completo'])
+        return result
+    except Exception as e:
+        st.error(f"Error al obtener clientes: {e}")
+        return pd.DataFrame(columns=['id_cliente', 'nombre_completo'])
 
 def get_lawyers():
-    return run_query("SELECT id_abogado, nombre || ' ' || apellido as nombre_completo FROM abogados ORDER BY nombre;")
+    try:
+        result = run_query("SELECT id_abogado, nombre || ' ' || apellido as nombre_completo FROM abogados ORDER BY nombre;")
+        if result.empty:
+            # Retornar DataFrame vacío con columnas esperadas si no hay datos
+            return pd.DataFrame(columns=['id_abogado', 'nombre_completo'])
+        return result
+    except Exception as e:
+        st.error(f"Error al obtener abogados: {e}")
+        return pd.DataFrame(columns=['id_abogado', 'nombre_completo'])
 
 def get_cases_detailed():
     return run_query("SELECT * FROM obtener_casos_detallados();")
@@ -116,6 +134,12 @@ st.markdown("---")
 # --- Página del Dashboard ---
 if page == "Dashboard":
     st.header("📊 Dashboard de Casos")
+    
+    # Verificar conexión de base de datos
+    if init_db_connection() is None:
+        st.error("No se puede conectar a la base de datos. Verifique la configuración.")
+        st.stop()
+    
     cases = get_cases_detailed()
 
     if cases.empty:
@@ -143,16 +167,25 @@ if page == "Dashboard":
 
                 with col2:
                     st.subheader("Estado del Caso")
+                    status_options = ["Abierto", "En Progreso", "Cerrado", "Archivado"]
+                    try:
+                        current_index = status_options.index(case['estado']) if case['estado'] in status_options else 0
+                    except (KeyError, ValueError):
+                        current_index = 0
+                    
                     new_status = st.selectbox(
                         "Cambiar estado",
-                        ["Abierto", "En Progreso", "Cerrado", "Archivado"],
-                        index=["Abierto", "En Progreso", "Cerrado", "Archivado"].index(case['estado']),
+                        status_options,
+                        index=current_index,
                         key=f"status_{case['id_caso']}"
                     )
                     if st.button("Actualizar Estado", key=f"upd_{case['id_caso']}"):
-                        run_procedure("actualizar_estado_caso", (case['id_caso'], new_status))
-                        st.toast("Estado actualizado.")
-                        st.experimental_rerun()
+                        try:
+                            run_procedure("actualizar_estado_caso", (case['id_caso'], new_status))
+                            st.toast("Estado actualizado.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error al actualizar estado: {e}")
                 
                 # Sección de Documentos
                 st.markdown("---")
@@ -183,22 +216,37 @@ elif page == "Crear Nuevo Caso":
         case_description = st.text_area("Descripción Detallada")
 
         clients = get_clients()
-        client_map = dict(zip(clients['nombre_completo'], clients['id_cliente']))
-        selected_client_name = st.selectbox("Seleccionar Cliente", client_map.keys())
+        if not clients.empty and 'nombre_completo' in clients.columns and 'id_cliente' in clients.columns:
+            client_map = dict(zip(clients['nombre_completo'], clients['id_cliente']))
+            selected_client_name = st.selectbox("Seleccionar Cliente", client_map.keys())
+        else:
+            st.warning("No hay clientes registrados o hay un error de conexión. Por favor, registre clientes primero.")
+            client_map = {}
+            selected_client_name = None
 
         lawyers = get_lawyers()
-        lawyer_map = dict(zip(lawyers['nombre_completo'], lawyers['id_abogado']))
-        selected_lawyer_name = st.selectbox("Asignar Abogado", lawyer_map.keys())
+        if not lawyers.empty and 'nombre_completo' in lawyers.columns and 'id_abogado' in lawyers.columns:
+            lawyer_map = dict(zip(lawyers['nombre_completo'], lawyers['id_abogado']))
+            selected_lawyer_name = st.selectbox("Asignar Abogado", lawyer_map.keys())
+        else:
+            st.warning("No hay abogados registrados o hay un error de conexión. Por favor, registre abogados primero.")
+            lawyer_map = {}
+            selected_lawyer_name = None
 
         submitted = st.form_submit_button("Guardar Caso")
         if submitted:
-            if not all([case_title, case_description, selected_client_name, selected_lawyer_name]):
-                st.error("Todos los campos son obligatorios.")
+            if not all([case_title, case_description, selected_client_name, selected_lawyer_name]) or not client_map or not lawyer_map:
+                st.error("Todos los campos son obligatorios y debe haber clientes y abogados registrados.")
             else:
-                client_id = client_map[selected_client_name]
-                lawyer_id = lawyer_map[selected_lawyer_name]
-                run_procedure("crear_caso", (case_title, case_description, client_id, lawyer_id))
-                st.success("¡Caso creado exitosamente!")
+                try:
+                    client_id = client_map[selected_client_name]
+                    lawyer_id = lawyer_map[selected_lawyer_name]
+                    run_procedure("crear_caso", (case_title, case_description, client_id, lawyer_id))
+                    st.success("¡Caso creado exitosamente!")
+                except KeyError as e:
+                    st.error(f"Error al obtener IDs: {e}")
+                except Exception as e:
+                    st.error(f"Error al crear el caso: {e}")
 
 
 # --- Página de Gestión Documental ---
@@ -264,7 +312,7 @@ elif page == "Gestionar Clientes y Abogados":
                 else:
                     run_procedure("crear_cliente", (nombre_cli, apellido_cli, email_cli, telefono_cli, direccion_cli))
                     st.success("¡Cliente guardado con éxito!")
-                    st.experimental_rerun()
+                    st.rerun()
         
         st.markdown("---")
         st.subheader("Lista de Clientes")
@@ -287,7 +335,7 @@ elif page == "Gestionar Clientes y Abogados":
                 else:
                     run_procedure("crear_abogado", (nombre_abo, apellido_abo, especialidad_abo, email_abo, telefono_abo))
                     st.success("¡Abogado guardado con éxito!")
-                    st.experimental_rerun()
+                    st.rerun()
 
         st.markdown("---")
         st.subheader("Lista de Abogados")
