@@ -321,10 +321,25 @@ def check_file_exists_in_supabase(storage_path):
         if not supabase_client:
             return False
         
-        # Intentar listar el archivo específico
-        response = supabase_client.storage.from_("documentos_casos").list(path=storage_path)
-        return len(response) > 0
-    except:
+        # Separar directorio y nombre del archivo
+        # storage_path = "4/GobiernoTI.pdf" -> directory = "4", filename = "GobiernoTI.pdf"
+        parts = storage_path.split('/')
+        if len(parts) != 2:
+            return False
+        
+        directory, filename = parts
+        
+        # Listar archivos en el directorio
+        response = supabase_client.storage.from_("documentos_casos").list(path=directory)
+        
+        # Buscar el archivo específico en la lista
+        for file_item in response:
+            if file_item.get('name') == filename:
+                return True
+        
+        return False
+    except Exception as e:
+        # Debug: mostrar error si es necesario
         return False
 
 def update_document_path(id_documento, new_path):
@@ -626,13 +641,30 @@ if page == "Dashboard":
                                                     "existe": file_exists
                                                 })
                                         else:
-                                            # Intentar crear URL firmada
-                                            response = supabase_client.storage.from_("documentos_casos").create_signed_url(storage_path, 60)
+                                            # Crear URL firmada
+                                            response = supabase_client.storage.from_("documentos_casos").create_signed_url(storage_path, 3600)  # 1 hora
                                             
                                             if response and 'signedURL' in response:
-                                                st.link_button("Descargar", response['signedURL'])
+                                                signed_url = response['signedURL']
+                                                
+                                                # Botones de acción
+                                                col_btn1, col_btn2 = st.columns(2)
+                                                with col_btn1:
+                                                    st.link_button("📥 Descargar", signed_url, help="Descargar archivo")
+                                                with col_btn2:
+                                                    # Botón para vista previa (solo para PDFs)
+                                                    if doc['nombre_archivo'].lower().endswith('.pdf'):
+                                                        if st.button("👁️ Vista Previa", key=f"preview_{doc.get('id_documento', 'unknown')}", help="Ver PDF"):
+                                                            st.markdown(f"""
+                                                            <iframe src="{signed_url}" width="100%" height="600" style="border: 1px solid #ccc;">
+                                                                <p>Su navegador no soporta iframes. <a href="{signed_url}" target="_blank">Haga clic aquí para abrir el PDF</a>.</p>
+                                                            </iframe>
+                                                            """, unsafe_allow_html=True)
+                                                    else:
+                                                        st.link_button("👁️ Ver", signed_url, help="Abrir archivo en nueva pestaña")
+                                                
                                             else:
-                                                st.error(f"❌ Respuesta inválida: {response}")
+                                                st.error(f"❌ No se pudo generar URL: {response}")
                                                 
                                 except Exception as e:
                                     error_msg = str(e)
