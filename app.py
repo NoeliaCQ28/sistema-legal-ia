@@ -123,13 +123,20 @@ def run_procedure(proc_name, params=None):
         conn.rollback()
         error_str = str(e)
         
-        # Manejo especial para el error de columna descripcion
-        if "descripcion" in error_str and "does not exist" in error_str and proc_name == "crear_documento":
-            st.error("❌ La tabla 'documentos' necesita ser actualizada. Ejecute el script SQL completo.")
+        # Manejo especial para errores de tabla documentos
+        if ("descripcion" in error_str or "id_caso" in error_str) and "does not exist" in error_str and proc_name == "crear_documento":
+            st.error("❌ La tabla 'documentos' tiene estructura incorrecta.")
             st.markdown("""
-            **Solución:**
-            1. Ejecute el script `bd.sql` completo en su base de datos PostgreSQL
-            2. O ejecute manualmente: `ALTER TABLE documentos ADD COLUMN descripcion TEXT;`
+            **Solución RÁPIDA:**
+            1. Ejecute el script `fix_documentos_table.sql` en su base de datos
+            2. Use el botón "🔍 Diagnosticar tabla 'documentos'" para verificar la estructura
+            
+            **Comando manual:**
+            ```sql
+            ALTER TABLE documentos ADD COLUMN IF NOT EXISTS descripcion TEXT;
+            ALTER TABLE documentos ADD COLUMN IF NOT EXISTS id_caso INT;
+            ALTER TABLE documentos ADD COLUMN IF NOT EXISTS ruta_storage TEXT;
+            ```
             """)
         else:
             st.error(f"Error al ejecutar el procedimiento: {e}")
@@ -183,23 +190,99 @@ def get_cases_detailed():
 def get_documents_for_case(case_id):
     return run_query("SELECT id_documento, nombre_archivo, descripcion, fecha_subida, ruta_storage FROM documentos WHERE id_caso = %s ORDER BY fecha_subida DESC;", (case_id,))
 
+def check_documentos_table_structure():
+    """Verifica la estructura de la tabla documentos y muestra información útil."""
+    try:
+        query = """
+        SELECT column_name, data_type, is_nullable
+        FROM information_schema.columns
+        WHERE table_name = 'documentos'
+        ORDER BY ordinal_position;
+        """
+        result = run_query(query)
+        if not result.empty:
+            st.info("📋 Estructura actual de la tabla 'documentos':")
+            st.dataframe(result)
+        else:
+            st.error("❌ La tabla 'documentos' no existe")
+        return result
+    except Exception as e:
+        st.error(f"Error al verificar estructura: {e}")
+        return pd.DataFrame()
+
 def create_document_fallback(nombre_archivo, descripcion, id_caso, ruta_storage):
     """Función de respaldo para crear documentos cuando el procedimiento falla."""
+    
+    # Primero verificar qué columnas existen
+    structure = check_documentos_table_structure()
+    
+    if structure.empty:
+        st.error("❌ No se puede crear documento: tabla no encontrada")
+        return False
+    
+    # Obtener columnas disponibles
+    available_columns = structure['column_name'].tolist()
+    
+    # Construir query dinámicamente basado en columnas disponibles
+    columns = []
+    values = []
+    params = []
+    
+    if 'nombre_archivo' in available_columns:
+        columns.append('nombre_archivo')
+        values.append('%s')
+        params.append(nombre_archivo)
+    
+    if 'descripcion' in available_columns:
+        columns.append('descripcion')
+        values.append('%s')
+        params.append(descripcion)
+    
+    if 'id_caso' in available_columns:
+        columns.append('id_caso')
+        values.append('%s')
+        params.append(id_caso)
+    
+    if 'ruta_storage' in available_columns:
+        columns.append('ruta_storage')
+        values.append('%s')
+        params.append(ruta_storage)
+    
+    if 'fecha_subida' in available_columns:
+        columns.append('fecha_subida')
+        values.append('CURRENT_TIMESTAMP')
+        # No agregamos parámetro para CURRENT_TIMESTAMP
+    
+    if not columns:
+        st.error("❌ No hay columnas compatibles en la tabla documentos")
+        return False
+    
     try:
-        # Intentar con descripción
-        query = "INSERT INTO documentos (nombre_archivo, descripcion, id_caso, ruta_storage) VALUES (%s, %s, %s, %s)"
-        result = run_query(query, (nombre_archivo, descripcion, id_caso, ruta_storage))
-        return True
-    except:
-        try:
-            # Intentar sin descripción si la columna no existe
-            query = "INSERT INTO documentos (nombre_archivo, id_caso, ruta_storage) VALUES (%s, %s, %s)"
-            result = run_query(query, (nombre_archivo, id_caso, ruta_storage))
-            st.warning("⚠️ Documento guardado sin descripción. Actualice la base de datos para incluir descripciones.")
-            return True
-        except Exception as e:
-            st.error(f"Error al guardar documento: {e}")
+        # Construir e ejecutar query
+        columns_str = ', '.join(columns)
+        values_str = ', '.join(values)
+        query = f"INSERT INTO documentos ({columns_str}) VALUES ({values_str})"
+        
+        conn = init_db_connection()
+        if conn is None:
             return False
+            
+        with conn.cursor() as cur:
+            cur.execute(query, params)
+            conn.commit()
+        
+        missing_columns = [col for col in ['nombre_archivo', 'descripcion', 'id_caso', 'ruta_storage'] 
+                          if col not in available_columns]
+        
+        if missing_columns:
+            st.warning(f"⚠️ Documento guardado, pero faltan columnas: {', '.join(missing_columns)}")
+            st.markdown("**Ejecute el script `fix_documentos_table.sql` para completar la estructura**")
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"Error al guardar documento: {e}")
+        return False
 
 # --- Interfaz de Usuario (Frontend) ---
 
@@ -360,6 +443,10 @@ elif page == "Gestión Documental":
     # Verificar conexión antes de continuar
     if not test_database_connection():
         st.stop()
+    
+    # Botón de diagnóstico
+    if st.button("🔍 Diagnosticar tabla 'documentos'"):
+        check_documentos_table_structure()
 
     cases = get_cases_detailed()
     if cases.empty:
