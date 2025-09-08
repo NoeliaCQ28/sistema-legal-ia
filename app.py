@@ -221,11 +221,12 @@ def mostrar_gestion_entidades():
 
             if cliente_submitted:
                 if cliente_nombre and cliente_apellido and cliente_email:
-                    execute_procedure(
+                    if execute_procedure(
                         "INSERT INTO clientes (nombre, apellido, email, telefono, direccion) VALUES (%s, %s, %s, %s, %s)",
                         (cliente_nombre, cliente_apellido, cliente_email, cliente_telefono, cliente_direccion)
-                    )
-                    st.success(f"Cliente '{cliente_nombre} {cliente_apellido}' guardado.")
+                    ):
+                        st.success(f"Cliente '{cliente_nombre} {cliente_apellido}' guardado.")
+                        st.rerun() # MEJORA: Recarga la página para mostrar el nuevo cliente
                 else:
                     st.error("Nombre, Apellido y Email son campos obligatorios.")
         
@@ -252,11 +253,12 @@ def mostrar_gestion_entidades():
 
             if abogado_submitted:
                 if abogado_nombre and abogado_apellido and abogado_email:
-                    execute_procedure(
+                    if execute_procedure(
                         "INSERT INTO abogados (nombre, apellido, especialidad, email, telefono) VALUES (%s, %s, %s, %s, %s)",
                         (abogado_nombre, abogado_apellido, abogado_especialidad, abogado_email, abogado_telefono)
-                    )
-                    st.success(f"Abogado '{abogado_nombre} {abogado_apellido}' guardado.")
+                    ):
+                        st.success(f"Abogado '{abogado_nombre} {abogado_apellido}' guardado.")
+                        st.rerun() # MEJORA: Recarga la página para mostrar el nuevo abogado
                 else:
                     st.error("Nombre, Apellido y Email son campos obligatorios.")
 
