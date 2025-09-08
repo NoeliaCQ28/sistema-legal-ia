@@ -1,11 +1,10 @@
 import streamlit as st
-import psycopg2
 import pandas as pd
-import os
+import psycopg2
 import google.generativeai as genai
-from psycopg2 import sql
+import time
 
-# --- CONFIGURACIÓN DE LA PÁGINA ---
+# --- Configuración de la Página ---
 st.set_page_config(
     page_title="LegalIA - Sistema de Gestión",
     page_icon="⚖️",
@@ -13,354 +12,303 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- ESTILOS CSS PERSONALIZADOS ---
-st.markdown("""
-<style>
-    .reportview-container {
-        background: #f0f2f6;
-    }
-    .sidebar .sidebar-content {
-        background: #ffffff;
-    }
-    .stButton>button {
-        background-color: #4CAF50;
-        color: white;
-        border-radius: 8px;
-        border: none;
-        padding: 10px 24px;
-        text-align: center;
-        text-decoration: none;
-        display: inline-block;
-        font-size: 16px;
-        margin: 4px 2px;
-        cursor: pointer;
-        transition-duration: 0.4s;
-    }
-    .stButton>button:hover {
-        background-color: white;
-        color: black;
-        border: 2px solid #4CAF50;
-    }
-    .stTextInput>div>div>input {
-        border-radius: 8px;
-    }
-    .stTextArea>div>div>textarea {
-        border-radius: 8px;
-    }
-    .stSelectbox>div>div {
-        border-radius: 8px;
-    }
-    .css-1d391kg {
-        border-radius: 12px;
-        padding: 2rem;
-        background-color: #ffffff;
-        box-shadow: 0 4px 8px 0 rgba(0,0,0,0.2);
-    }
-    h1, h2, h3 {
-        color: #0a2f5a;
-    }
-</style>
-""", unsafe_allow_html=True)
+# --- Funciones de Conexión a la Base de Datos ---
+
+# Intenta obtener las credenciales de los secretos de Streamlit
+try:
+    DB_CONFIG = st.secrets["database"]
+    AI_CONFIG = st.secrets["ai"]
+    genai.configure(api_key=AI_CONFIG['google_api_key'])
+    MODELO_IA = genai.GenerativeModel('gemini-1.5-flash')
+except (FileNotFoundError, KeyError):
+    st.error("⚠️ Error de Configuración: No se encontraron las credenciales de la base de datos o de la API de IA. Asegúrate de que tu archivo `secrets.toml` está configurado correctamente o los secretos están en Streamlit Cloud.")
+    st.stop()
 
 
-# --- CONFIGURACIÓN DE SECRETOS Y CONEXIONES ---
-
-# Para ejecutar en Google Colab, crea un archivo secrets.toml y súbelo.
-# Formato de secrets.toml:
-# [database]
-# host = "db.xxxxxxxx.supabase.co"
-# port = 5432
-# dbname = "postgres"
-# user = "postgres"
-# password = "tu-super-password"
-#
-# [ai]
-# google_api_key = "tu-api-key-de-gemini"
-
-def init_connection():
-    """Inicializa la conexión a la base de datos PostgreSQL."""
+def get_db_connection():
+    """Establece y devuelve una conexión a la base de datos PostgreSQL."""
     try:
-        conn = psycopg2.connect(**st.secrets["database"])
+        conn = psycopg2.connect(
+            dbname=DB_CONFIG['dbname'],
+            user=DB_CONFIG['user'],
+            password=DB_CONFIG['password'],
+            host=DB_CONFIG['host'],
+            port=DB_CONFIG['port']
+        )
         return conn
     except Exception as e:
         st.error(f"Error al conectar a la base de datos: {e}")
         return None
 
-def configure_ai():
-    """Configura la API de IA de Google."""
-    try:
-        genai.configure(api_key=st.secrets["ai"]["google_api_key"])
-    except Exception as e:
-        st.error(f"Error al configurar la API de IA. Asegúrate de que tu API Key es correcta. Error: {e}")
-        
-# --- FUNCIONES DE LA BASE DE DATOS ---
-
-def run_query(query, params=None):
-    """Ejecuta una consulta SELECT y devuelve los resultados como un DataFrame."""
-    conn = init_connection()
-    if conn:
-        with conn.cursor() as cur:
-            cur.execute(query, params)
-            if cur.description:
-                return pd.DataFrame(cur.fetchall(), columns=[desc[0] for desc in cur.description])
-    return pd.DataFrame()
-
-def call_proc(proc_name, params=None):
-    """Llama a un procedimiento almacenado."""
-    conn = init_connection()
+def fetch_data(query, params=None):
+    """Ejecuta una consulta SELECT y devuelve los resultados como un DataFrame de Pandas."""
+    conn = get_db_connection()
     if conn:
         try:
-            with conn.cursor() as cur:
-                cur.callproc(proc_name, params)
-                conn.commit()
-            st.success("Operación realizada con éxito.")
-        except Exception as e:
-            st.error(f"Error al ejecutar el procedimiento: {e}")
-        finally:
-            conn.close()
-
-def call_func(func_name, params=None):
-    """Llama a una función que devuelve un valor (ej: el ID de una nueva fila)."""
-    conn = init_connection()
-    result = None
-    if conn:
-        try:
-            with conn.cursor() as cur:
-                if params:
-                    placeholders = ', '.join(['%s'] * len(params))
-                    cur.execute(f"SELECT * FROM {func_name}({placeholders});", params)
-                else:
-                    cur.execute(f"SELECT * FROM {func_name}();")
-                
-                result = cur.fetchall()
-            conn.commit()
-            st.success("Función ejecutada con éxito.")
+            return pd.read_sql_query(query, conn, params=params)
         except Exception as e:
             st.error(f"Error al ejecutar la función: {e}")
+            return pd.DataFrame()
         finally:
             conn.close()
-    return result
+    return pd.DataFrame()
 
-# --- FUNCIONES DE IA ---
+def execute_procedure(procedure_call, params=None):
+    """Ejecuta un procedimiento almacenado que no devuelve resultados (INSERT, UPDATE, DELETE)."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(procedure_call, params)
+            conn.commit()
+            return True
+        except Exception as e:
+            st.error(f"Error al ejecutar el procedimiento: {e}")
+            return False
+        finally:
+            conn.close()
+    return False
 
-def generar_resumen_ia(descripcion_caso):
-    """Genera un resumen de un caso usando el modelo de IA de Google."""
-    if 'ai' not in st.secrets or 'google_api_key' not in st.secrets['ai']:
-        st.warning("La clave API de IA no está configurada en los secretos.")
-        return "Error: API Key no configurada."
+# --- Funciones de IA ---
 
-    configure_ai()
+def resumir_caso_ia(descripcion):
+    """Utiliza la IA de Gemini para generar un resumen conciso de la descripción de un caso."""
+    if not descripcion or not isinstance(descripcion, str) or len(descripcion.strip()) < 10:
+        return "Descripción demasiado breve para resumir."
+    
+    prompt = f"Actúa como un asistente legal experto. Resume el siguiente caso en un máximo de 3 frases clave, destacando el objetivo principal y las partes involucradas. Descripción: '{descripcion}'"
+    
     try:
-        model = genai.GenerativeModel('gemini-pro')
-        prompt = f"""
-        Actúa como un asistente legal experto. Analiza la siguiente descripción de un caso legal y genera un resumen conciso en español.
-        El resumen debe incluir:
-        1.  **Tipo de Caso:** (ej. Penal, Civil, Mercantil).
-        2.  **Partes Involucradas:** (si se mencionan).
-        3.  **Objetivo Principal:** (qué se busca con el caso).
-        4.  **Puntos Clave:** (2 o 3 puntos cruciales).
-
-        **Descripción del Caso:**
-        "{descripcion_caso}"
-
-        **Resumen:**
-        """
-        response = model.generate_content(prompt)
+        with st.spinner("🧠 La IA está analizando el caso..."):
+            response = MODELO_IA.generate_content(prompt)
+            time.sleep(1) # Simula un pequeño retraso para mejorar la UX
         return response.text
     except Exception as e:
-        st.error(f"Ocurrió un error al generar el resumen con IA: {e}")
-        return "No se pudo generar el resumen."
+        st.warning(f"No se pudo generar el resumen con IA. Motivo: {e}")
+        return "Resumen no disponible."
 
-def busqueda_inteligente_ia(query_usuario, df_casos):
-    """Usa IA para encontrar casos relevantes basados en una búsqueda en lenguaje natural."""
-    if 'ai' not in st.secrets or 'google_api_key' not in st.secrets['ai']:
-        st.warning("La clave API de IA no está configurada en los secretos.")
-        return []
+# --- Módulos de la Interfaz de Usuario (UI) ---
 
-    configure_ai()
-    try:
-        model = genai.GenerativeModel('gemini-pro')
-        
-        # Preparamos los datos de los casos para el prompt
-        casos_texto = ""
-        for index, row in df_casos.iterrows():
-            casos_texto += f"ID: {row['caso_id']}, Título: {row['titulo_caso']}, Descripción: {row['descripcion_caso']}, Cliente: {row['nombre_cliente']}, Abogado: {row['nombre_abogado']}\n"
-
-        prompt = f"""
-        Eres un motor de búsqueda legal. Un usuario ha realizado la siguiente consulta: "{query_usuario}".
-        Analiza la lista de casos proporcionada a continuación y devuelve únicamente los IDs de los casos que son más relevantes para la consulta del usuario.
-        Devuelve los IDs como una lista de números separados por comas. Si ningún caso es relevante, devuelve una lista vacía.
-
-        **Lista de Casos:**
-        {casos_texto}
-
-        **IDs Relevantes (separados por comas):**
-        """
-        
-        response = model.generate_content(prompt)
-        # Limpiamos y procesamos la respuesta para obtener solo los IDs
-        ids_str = response.text.strip().split(',')
-        ids_relevantes = [int(id_str.strip()) for id_str in ids_str if id_str.strip().isdigit()]
-        return ids_relevantes
-
-    except Exception as e:
-        st.error(f"Ocurrió un error en la búsqueda inteligente: {e}")
-        return []
-
-# --- INTERFAZ DE USUARIO ---
-
-st.title("⚖️ LegalIA - Sistema de Gestión de Casos")
-st.markdown("Bienvenido al panel de control para la gestión de casos legales. Utilice el menú de la izquierda para navegar.")
-
-# --- BARRA LATERAL ---
-st.sidebar.header("Menú de Navegación")
-opcion = st.sidebar.radio("Seleccione un Módulo", ["Dashboard", "Crear Nuevo Caso", "Gestionar Clientes y Abogados"])
-
-# Cargar datos para el selector
-clientes_df = run_query("SELECT id, nombre || ' ' || apellido as nombre_completo FROM clientes ORDER BY nombre_completo;")
-abogados_df = run_query("SELECT id, nombre || ' ' || apellido as nombre_completo FROM abogados ORDER BY nombre_completo;")
-
-
-if opcion == "Dashboard":
+def mostrar_dashboard():
+    """Muestra el panel principal con la lista de casos y opciones de búsqueda."""
     st.header("📊 Dashboard de Casos")
     
-    # Obtener todos los casos
-    casos_df = call_func("obtener_casos_detallados")
-    if isinstance(casos_df, list) and casos_df:
-        casos_df = pd.DataFrame(casos_df, columns=['caso_id', 'titulo_caso', 'estado_caso', 'nombre_cliente', 'nombre_abogado', 'descripcion_caso', 'fecha_apertura_caso'])
-    elif not isinstance(casos_df, pd.DataFrame):
-        casos_df = pd.DataFrame()
+    casos_df = fetch_data("SELECT * FROM obtener_casos_detallados();")
 
+    if casos_df.empty:
+        st.info("No hay casos registrados en el sistema.")
+        return
 
-    if not casos_df.empty:
-        # --- Búsqueda Inteligente ---
-        st.subheader("🔍 Búsqueda Inteligente")
-        search_query = st.text_input("Busque casos por descripción, cliente, tipo, etc. (Ej: 'casos de divorcio de María')")
+    # --- Filtros y Búsqueda ---
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        termino_busqueda = st.text_input("Buscar por título, descripción, cliente o abogado:", placeholder="Escribe para buscar...")
+    with col2:
+        estados_disponibles = ["Todos"] + list(casos_df['estado_caso'].unique())
+        estado_seleccionado = st.selectbox("Filtrar por estado:", options=estados_disponibles)
 
-        if search_query:
-            with st.spinner("Buscando con IA..."):
-                ids_relevantes = busqueda_inteligente_ia(search_query, casos_df)
-                if ids_relevantes:
-                    st.success(f"Se encontraron {len(ids_relevantes)} casos relevantes.")
-                    resultados_df = casos_df[casos_df['caso_id'].isin(ids_relevantes)]
-                    st.dataframe(resultados_df)
-                else:
-                    st.warning("No se encontraron casos que coincidan con su búsqueda.")
-        
-        st.markdown("---")
-        st.subheader("Todos los Casos")
+    # Aplicar filtros
+    casos_filtrados = casos_df
+    if termino_busqueda:
+        casos_filtrados = casos_filtrados[
+            casos_filtrados.apply(
+                lambda row: termino_busqueda.lower() in str(row['titulo_caso']).lower() or
+                            termino_busqueda.lower() in str(row['descripcion_caso']).lower() or
+                            termino_busqueda.lower() in str(row['cliente']).lower() or
+                            termino_busqueda.lower() in str(row['abogado']).lower(),
+                axis=1
+            )
+        ]
+    if estado_seleccionado != "Todos":
+        casos_filtrados = casos_filtrados[casos_filtrados['estado_caso'] == estado_seleccionado]
 
-        for index, row in casos_df.iterrows():
-            with st.expander(f"**{row['titulo_caso']}** (Cliente: {row['nombre_cliente']} - Estado: {row['estado_caso']})"):
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    st.markdown(f"**Abogado Asignado:** {row['nombre_abogado']}")
-                    st.markdown(f"**Fecha de Apertura:** {row['fecha_apertura_caso']}")
-                    st.markdown(f"**Descripción:**")
-                    st.info(row['descripcion_caso'])
-                
-                with col2:
-                    st.markdown("**Acciones**")
-                    # Actualizar estado
-                    nuevo_estado = st.selectbox(
-                        "Cambiar Estado",
-                        ['Abierto', 'En Progreso', 'Cerrado', 'Suspendido'],
-                        index=['Abierto', 'En Progreso', 'Cerrado', 'Suspendido'].index(row['estado_caso']),
-                        key=f"estado_{row['caso_id']}"
-                    )
-                    if st.button("Actualizar Estado", key=f"update_{row['caso_id']}"):
-                        call_proc("actualizar_estado_caso", (row['caso_id'], nuevo_estado))
-                        st.experimental_rerun()
-                    
-                    # Resumen con IA
-                    if st.button("Generar Resumen con IA", key=f"ia_{row['caso_id']}"):
-                        with st.spinner("La IA está analizando el caso..."):
-                            resumen = generar_resumen_ia(row['descripcion_caso'])
-                            st.subheader("Resumen Generado por IA")
-                            st.markdown(resumen)
+    st.write(f"Mostrando **{len(casos_filtrados)}** de **{len(casos_df)}** casos.")
+
+    # --- Visualización de Casos ---
+    if casos_filtrados.empty:
+        st.warning("No se encontraron casos que coincidan con los criterios de búsqueda.")
     else:
-        st.warning("No hay casos registrados en el sistema.")
+        for index, caso in casos_filtrados.iterrows():
+            with st.expander(f"**{caso['titulo_caso']}** - Cliente: {caso['cliente']} (Estado: {caso['estado_caso']})"):
+                col_info, col_accion = st.columns([3, 1])
+                with col_info:
+                    st.markdown(f"**Abogado Asignado:** {caso['abogado']}")
+                    st.markdown(f"**Fecha de Apertura:** {pd.to_datetime(caso['fecha_apertura_caso']).strftime('%d/%m/%Y %H:%M')}")
+                    st.markdown("**Descripción:**")
+                    st.caption(caso['descripcion_caso'])
 
+                    if st.button("Generar Resumen con IA", key=f"ia_{caso['id_caso']}"):
+                        resumen = resumir_caso_ia(caso['descripcion_caso'])
+                        st.info(f"**Resumen IA:** {resumen}")
+                
+                with col_accion:
+                    st.write("Cambiar Estado:")
+                    nuevos_estados = ["Abierto", "En Progreso", "Cerrado", "En Espera"]
+                    if caso['estado_caso'] in nuevos_estados:
+                        nuevos_estados.remove(caso['estado_caso'])
+                    
+                    nuevo_estado = st.selectbox(
+                        "Nuevo estado",
+                        options=nuevos_estados,
+                        key=f"estado_{caso['id_caso']}",
+                        label_visibility="collapsed"
+                    )
+                    
+                    if st.button("Actualizar Estado", key=f"actualizar_{caso['id_caso']}"):
+                        if execute_procedure("CALL actualizar_estado_caso(%s, %s)", (caso['id_caso'], nuevo_estado)):
+                            st.success(f"Estado del caso '{caso['titulo_caso']}' actualizado a '{nuevo_estado}'.")
+                            st.rerun() # Recarga la página para ver el cambio
+                        # El error se muestra en la función execute_procedure
 
-elif opcion == "Crear Nuevo Caso":
-    st.header("✍️ Registrar Nuevo Caso")
-    with st.form("nuevo_caso_form", clear_on_submit=True):
-        titulo = st.text_input("Título del Caso", help="Ej: Demanda por incumplimiento de contrato")
-        descripcion = st.text_area("Descripción Detallada del Caso", height=200)
+def mostrar_crear_caso():
+    """Muestra el formulario para registrar un nuevo caso."""
+    st.header("📝 Crear Nuevo Caso")
+
+    clientes_df = fetch_data("SELECT id, nombre, apellido FROM clientes ORDER BY nombre, apellido;")
+    abogados_df = fetch_data("SELECT id, nombre, apellido FROM abogados ORDER BY nombre, apellido;")
+
+    if clientes_df.empty or abogados_df.empty:
+        st.warning("Debe registrar al menos un cliente y un abogado antes de poder crear un caso.")
+        return
+
+    clientes_map = {f"{row['nombre']} {row['apellido']}": row['id'] for index, row in clientes_df.iterrows()}
+    abogados_map = {f"{row['nombre']} {row['apellido']}": row['id'] for index, row in abogados_df.iterrows()}
+
+    with st.form("nuevo_caso_form"):
+        titulo = st.text_input("Título del Caso", max_chars=255)
+        descripcion = st.text_area("Descripción Detallada del Caso")
         
-        # Selectores para cliente y abogado
-        cliente_map = dict(zip(clientes_df['nombre_completo'], clientes_df['id']))
-        abogado_map = dict(zip(abogados_df['nombre_completo'], abogados_df['id']))
-
-        cliente_seleccionado = st.selectbox("Seleccione el Cliente", options=clientes_df['nombre_completo'])
-        abogado_seleccionado = st.selectbox("Asignar al Abogado", options=abogados_df['nombre_completo'])
+        col1, col2 = st.columns(2)
+        with col1:
+            cliente_seleccionado = st.selectbox("Seleccione un Cliente", options=clientes_map.keys())
+        with col2:
+            abogado_seleccionado = st.selectbox("Asignar a un Abogado", options=abogados_map.keys())
         
-        submitted = st.form_submit_button("Guardar Caso")
+        submitted = st.form_submit_button("Registrar Caso")
+
         if submitted:
-            if not titulo or not descripcion or not cliente_seleccionado or not abogado_seleccionado:
-                st.error("Por favor, complete todos los campos.")
+            if not titulo:
+                st.error("El título del caso es obligatorio.")
             else:
-                cliente_id = cliente_map[cliente_seleccionado]
-                abogado_id = abogado_map[abogado_seleccionado]
-                call_func("crear_caso", (titulo, descripcion, cliente_id, abogado_id))
-                st.balloons()
+                cliente_id = clientes_map[cliente_seleccionado]
+                abogado_id = abogados_map[abogado_seleccionado]
+                
+                if execute_procedure("CALL registrar_nuevo_caso(%s, %s, %s, %s)", (titulo, descripcion, cliente_id, abogado_id)):
+                    st.success(f"¡Caso '{titulo}' registrado exitosamente!")
+                    st.balloons()
+                # El error se maneja dentro de la función execute_procedure
 
-elif opcion == "Gestionar Clientes y Abogados":
+def mostrar_gestion_entidades():
+    """Muestra la interfaz para gestionar clientes y abogados."""
     st.header("👥 Gestión de Clientes y Abogados")
-    
-    tab1, tab2 = st.tabs(["Clientes", "Abogados"])
 
-    with tab1:
+    tab_clientes, tab_abogados = st.tabs(["Clientes", "Abogados"])
+
+    with tab_clientes:
+        st.subheader("Registrar Nuevo Cliente")
+        with st.form("nuevo_cliente_form", clear_on_submit=True):
+            c_col1, c_col2 = st.columns(2)
+            with c_col1:
+                cliente_nombre = st.text_input("Nombre del Cliente")
+                cliente_email = st.text_input("Email del Cliente")
+            with c_col2:
+                cliente_apellido = st.text_input("Apellido del Cliente")
+                cliente_telefono = st.text_input("Teléfono del Cliente")
+            
+            cliente_direccion = st.text_area("Dirección")
+            
+            cliente_submitted = st.form_submit_button("Guardar Cliente")
+
+            if cliente_submitted:
+                if cliente_nombre and cliente_apellido and cliente_email:
+                    execute_procedure(
+                        "INSERT INTO clientes (nombre, apellido, email, telefono, direccion) VALUES (%s, %s, %s, %s, %s)",
+                        (cliente_nombre, cliente_apellido, cliente_email, cliente_telefono, cliente_direccion)
+                    )
+                    st.success(f"Cliente '{cliente_nombre} {cliente_apellido}' guardado.")
+                else:
+                    st.error("Nombre, Apellido y Email son campos obligatorios.")
+        
+        st.divider()
         st.subheader("Lista de Clientes")
-        st.dataframe(clientes_df)
-        with st.expander("Añadir Nuevo Cliente"):
-             with st.form("nuevo_cliente_form", clear_on_submit=True):
-                nombre = st.text_input("Nombre del Cliente")
-                apellido = st.text_input("Apellido del Cliente")
-                email = st.text_input("Email")
-                telefono = st.text_input("Teléfono")
-                submitted = st.form_submit_button("Guardar Cliente")
-                if submitted:
-                    conn = init_connection()
-                    if conn:
-                        with conn.cursor() as cur:
-                            cur.execute(
-                                "INSERT INTO clientes (nombre, apellido, email, telefono) VALUES (%s, %s, %s, %s)",
-                                (nombre, apellido, email, telefono)
-                            )
-                            conn.commit()
-                        st.success("Cliente añadido.")
-                        st.experimental_rerun()
-    
-    with tab2:
-        st.subheader("Lista de Abogados")
-        st.dataframe(abogados_df)
-        with st.expander("Añadir Nuevo Abogado"):
-             with st.form("nuevo_abogado_form", clear_on_submit=True):
-                nombre = st.text_input("Nombre del Abogado")
-                apellido = st.text_input("Apellido del Abogado")
-                especialidad = st.text_input("Especialidad")
-                email = st.text_input("Email del Abogado")
-                submitted = st.form_submit_button("Guardar Abogado")
-                if submitted:
-                    conn = init_connection()
-                    if conn:
-                        with conn.cursor() as cur:
-                            cur.execute(
-                                "INSERT INTO abogados (nombre, apellido, especialidad, email) VALUES (%s, %s, %s, %s)",
-                                (nombre, apellido, especialidad, email)
-                            )
-                            conn.commit()
-                        st.success("Abogado añadido.")
-                        st.experimental_rerun()
+        clientes_existentes = fetch_data("SELECT nombre, apellido, email, telefono, direccion FROM clientes ORDER BY nombre, apellido;")
+        st.dataframe(clientes_existentes, use_container_width=True)
 
-st.sidebar.info(
-    """
-    **LegalIA v1.0**
+
+    with tab_abogados:
+        st.subheader("Registrar Nuevo Abogado")
+        with st.form("nuevo_abogado_form", clear_on_submit=True):
+            a_col1, a_col2 = st.columns(2)
+            with a_col1:
+                abogado_nombre = st.text_input("Nombre del Abogado")
+                abogado_email = st.text_input("Email del Abogado")
+            with a_col2:
+                abogado_apellido = st.text_input("Apellido del Abogado")
+                abogado_telefono = st.text_input("Teléfono del Abogado")
+            
+            abogado_especialidad = st.text_input("Especialidad")
+            
+            abogado_submitted = st.form_submit_button("Guardar Abogado")
+
+            if abogado_submitted:
+                if abogado_nombre and abogado_apellido and abogado_email:
+                    execute_procedure(
+                        "INSERT INTO abogados (nombre, apellido, especialidad, email, telefono) VALUES (%s, %s, %s, %s, %s)",
+                        (abogado_nombre, abogado_apellido, abogado_especialidad, abogado_email, abogado_telefono)
+                    )
+                    st.success(f"Abogado '{abogado_nombre} {abogado_apellido}' guardado.")
+                else:
+                    st.error("Nombre, Apellido y Email son campos obligatorios.")
+
+        st.divider()
+        st.subheader("Lista de Abogados")
+        abogados_existentes = fetch_data("SELECT nombre, apellido, especialidad, email, telefono FROM abogados ORDER BY nombre, apellido;")
+        st.dataframe(abogados_existentes, use_container_width=True)
+
+# --- Aplicación Principal ---
+
+def main():
+    st.sidebar.title("Menú de Navegación")
+    st.sidebar.markdown("Seleccione un Módulo")
     
-    Un sistema inteligente para la gestión legal.
-    - **Dashboard:** Visualiza y busca casos.
-    - **Crear Caso:** Registra nuevos expedientes.
-    - **Gestionar:** Administra clientes y abogados.
-    """
-)   
+    opciones = {
+        "Dashboard": "📊",
+        "Crear Nuevo Caso": "📝",
+        "Gestionar Clientes y Abogados": "👥"
+    }
+    
+    seleccion = st.sidebar.radio(
+        "Módulos", 
+        list(opciones.keys()), 
+        format_func=lambda x: f"{opciones[x]} {x}",
+        label_visibility="collapsed"
+    )
+
+    st.sidebar.divider()
+    st.sidebar.info(
+        """
+        **LegalIA v1.0**
+
+        Un sistema inteligente para la gestión legal.
+        - **Dashboard:** Visualiza y busca casos.
+        - **Crear Caso:** Registra nuevos expedientes.
+        - **Gestionar:** Administra clientes y abogados.
+        """
+    )
+
+    # --- Título Principal ---
+    st.title("⚖️ LegalIA - Sistema de Gestión de Casos")
+    st.markdown("Bienvenido al panel de control para la gestión de casos legales. Utilice el menú de la izquierda para navegar.")
+    st.divider()
+
+    # --- Enrutador de Módulos ---
+    if seleccion == "Dashboard":
+        mostrar_dashboard()
+    elif seleccion == "Crear Nuevo Caso":
+        mostrar_crear_caso()
+    elif seleccion == "Gestionar Clientes y Abogados":
+        mostrar_gestion_entidades()
+
+if __name__ == "__main__":
+    main()
+
