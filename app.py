@@ -36,7 +36,13 @@ def init_supabase_client():
     try:
         url = st.secrets["supabase"]["url"]
         key = st.secrets["supabase"]["key"]
-        return create_client(url, key)
+        supabase = create_client(url, key)
+        
+        # Verificar que tenemos los permisos correctos
+        if "service_role" not in key:
+            st.warning("⚠️ Recomendación: Use el Service Role Key para operaciones de storage")
+        
+        return supabase
     except Exception as e:
         st.error(f"Error al conectar con Supabase: {e}")
         return None
@@ -357,8 +363,19 @@ elif page == "Gestión Documental":
                                 if original_file_name != sanitized_file_name:
                                     st.info(f"Nota: El archivo se guardó como '{sanitized_file_name}' en el almacenamiento para compatibilidad.")
                     except Exception as e:
-                        if "duplicate" in str(e):
+                        error_str = str(e)
+                        if "duplicate" in error_str:
                              st.warning(f"Un archivo con el nombre '{sanitized_file_name}' ya existe. Por favor, cambie el nombre del archivo.")
+                        elif "Unauthorized" in error_str or "403" in error_str:
+                            st.error("❌ Error de permisos de Supabase Storage. Soluciones:")
+                            st.markdown("""
+                            **Opción 1: Actualizar configuración**
+                            - Use el Service Role Key en lugar del Anon Key en sus secrets
+                            
+                            **Opción 2: Modificar políticas RLS**
+                            - Vaya a Supabase → Storage → Policies
+                            - Cree políticas que permitan acceso público al bucket 'documentos_casos'
+                            """)
                         else:
                             st.error(f"Error al subir el archivo: {e}")
             else:
