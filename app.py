@@ -612,86 +612,76 @@ if page == "Dashboard":
                             
                             doc_col1, doc_col2 = st.columns([3, 1])
                             with doc_col1:
-                            # Manejar formato de fecha para documentos
-                            try:
-                                if hasattr(doc['fecha_subida'], 'strftime'):
-                                    fecha_str = doc['fecha_subida'].strftime('%d/%m/%Y %H:%M')
-                                else:
-                                    fecha_str = str(doc['fecha_subida'])
-                                st.write(f"📄 **{doc['nombre_archivo']}** - Subido: {fecha_str}")
-                            except Exception:
-                                st.write(f"📄 **{doc['nombre_archivo']}** - Subido: {doc['fecha_subida']}")
-                        with doc_col2:
-                            if supabase_client:
+                                # Manejar formato de fecha para documentos
                                 try:
-                                    # Verificar que tenemos la ruta del storage
-                                    ruta_valor = doc.get('ruta_storage', None)
-                                    
-                                    if pd.isna(ruta_valor) or ruta_valor is None or str(ruta_valor).strip() == '' or str(ruta_valor) == 'nan':
-                                        st.error("❌ Sin ruta de archivo")
+                                    if hasattr(doc['fecha_subida'], 'strftime'):
+                                        fecha_str = doc['fecha_subida'].strftime('%d/%m/%Y %H:%M')
                                     else:
-                                        storage_path = str(doc['ruta_storage']).strip()
+                                        fecha_str = str(doc['fecha_subida'])
+                                    st.write(f"📄 **{doc['nombre_archivo']}** - Subido: {fecha_str}")
+                                except Exception:
+                                    st.write(f"📄 **{doc['nombre_archivo']}** - Subido: {doc['fecha_subida']}")
+                            with doc_col2:
+                                if supabase_client:
+                                    try:
+                                        # Verificar que tenemos la ruta del storage
+                                        ruta_valor = doc.get('ruta_storage', None)
                                         
-                                        # Verificar si el archivo existe antes de crear el enlace
-                                        file_exists = check_file_exists_in_supabase(storage_path)
-                                        
-                                        if not file_exists:
-                                            st.warning("⚠️ Archivo no encontrado en storage")
-                                            if st.button(f"🔍 Debug", key=f"debug_{doc.get('id_documento', 'unknown')}"):
-                                                st.json({
-                                                    "archivo": doc.get('nombre_archivo', 'N/A'),
-                                                    "ruta_storage": storage_path,
-                                                    "bucket": "documentos_casos",
-                                                    "existe": file_exists
-                                                })
+                                        if pd.isna(ruta_valor) or ruta_valor is None or str(ruta_valor).strip() == '' or str(ruta_valor) == 'nan':
+                                            st.error("❌ Sin ruta de archivo")
                                         else:
-                                            # Crear URL firmada
-                                            response = supabase_client.storage.from_("documentos_casos").create_signed_url(storage_path, 3600)  # 1 hora
+                                            storage_path = str(doc['ruta_storage']).strip()
                                             
-                                            if response and 'signedURL' in response:
-                                                signed_url = response['signedURL']
-                                                
-                                                # Botón de descarga
-                                                st.link_button("📥 Descargar", signed_url, help="Descargar archivo", use_container_width=True)
-                                                
+                                            # Verificar si el archivo existe antes de crear el enlace
+                                            file_exists = check_file_exists_in_supabase(storage_path)
+                                            
+                                            if not file_exists:
+                                                st.warning("⚠️ Archivo no encontrado en storage")
+                                                if st.button(f"🔍 Debug", key=f"debug_{doc.get('id_documento', 'unknown')}"):
+                                                    st.json({
+                                                        "archivo": doc.get('nombre_archivo', 'N/A'),
+                                                        "ruta_storage": storage_path,
+                                                        "bucket": "documentos_casos",
+                                                        "existe": file_exists
+                                                    })
                                             else:
-                                                st.error(f"❌ No se pudo generar URL: {response}")
+                                                # Crear URL firmada
+                                                response = supabase_client.storage.from_("documentos_casos").create_signed_url(storage_path, 3600)  # 1 hora
                                                 
-                                        # Vista previa automática para PDFs (fuera de las columnas)
-                                        if file_exists and response and 'signedURL' in response and doc['nombre_archivo'].lower().endswith('.pdf'):
-                                            with st.expander("👁️ Vista Previa del PDF", expanded=False):
-                                                st.markdown(f"""
-                                                <iframe src="{response['signedURL']}" width="100%" height="600" style="border: 1px solid #ccc;">
-                                                    <p>Su navegador no soporta iframes. <a href="{response['signedURL']}" target="_blank">Haga clic aquí para abrir el PDF</a>.</p>
-                                                </iframe>
-                                                """, unsafe_allow_html=True)
-                                                
-                                except Exception as e:
-                                    error_msg = str(e)
-                                    st.error(f"❌ Error: {error_msg}")
+                                                if response and 'signedURL' in response:
+                                                    signed_url = response['signedURL']
+                                                    
+                                                    # Botón de descarga
+                                                    st.link_button("📥 Descargar", signed_url, help="Descargar archivo", use_container_width=True)
+                                                    
+                                                else:
+                                                    st.error(f"❌ No se pudo generar URL: {response}")
+                                                    
+                                    except Exception as e:
+                                        error_msg = str(e)
+                                        st.error(f"❌ Error: {error_msg}")
+                                else:
+                                    st.error("❌ Cliente Supabase no disponible")
+                            
+                            # Vista previa automática para PDFs (fuera de las columnas)
+                            if supabase_client:
+                                ruta_valor = doc.get('ruta_storage', None)
+                                if not (pd.isna(ruta_valor) or ruta_valor is None or str(ruta_valor).strip() == ''):
+                                    storage_path = str(doc['ruta_storage']).strip()
+                                    file_exists = check_file_exists_in_supabase(storage_path)
                                     
-                                    # Información de diagnóstico expandida
-                                    if st.button(f"🔍 Debug", key=f"debug_{doc.get('id_documento', 'unknown')}"):
-                                        
-                                        # Verificar configuración de Supabase
-                                        config_info = {
-                                            "archivo": doc.get('nombre_archivo', 'N/A'),
-                                            "ruta_storage": doc.get('ruta_storage', 'N/A'),
-                                            "error": error_msg,
-                                            "bucket": "documentos_casos"
-                                        }
-                                        
-                                        # Verificar si es problema de autenticación
-                                        if "401" in error_msg or "unauthorized" in error_msg.lower():
-                                            config_info["probable_causa"] = "Service Role Key requerido para acceso a storage"
-                                        elif "403" in error_msg or "forbidden" in error_msg.lower():
-                                            config_info["probable_causa"] = "Políticas RLS bloquean el acceso"
-                                        elif "404" in error_msg or "not found" in error_msg.lower():
-                                            config_info["probable_causa"] = "Archivo o bucket no encontrado"
-                                        
-                                        st.json(config_info)
-                            else:
-                                st.error("❌ Cliente Supabase no disponible")
+                                    if file_exists and doc['nombre_archivo'].lower().endswith('.pdf'):
+                                        try:
+                                            response = supabase_client.storage.from_("documentos_casos").create_signed_url(storage_path, 3600)
+                                            if response and 'signedURL' in response:
+                                                with st.expander("👁️ Vista Previa del PDF", expanded=False):
+                                                    st.markdown(f"""
+                                                    <iframe src="{response['signedURL']}" width="100%" height="600" style="border: 1px solid #ccc;">
+                                                        <p>Su navegador no soporta iframes. <a href="{response['signedURL']}" target="_blank">Haga clic aquí para abrir el PDF</a>.</p>
+                                                    </iframe>
+                                                    """, unsafe_allow_html=True)
+                                        except:
+                                            pass
 
 
 # --- Página de Creación de Casos ---
