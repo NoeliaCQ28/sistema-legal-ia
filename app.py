@@ -585,13 +585,6 @@ if page == "Dashboard":
                 st.subheader("Documentos del Caso")
                 documents = get_documents_for_case(case['id_caso'])
                 
-                # Debug temporal: mostrar información sobre la consulta
-                with st.expander("🔍 Debug - Info de documentos", expanded=False):
-                    st.write(f"Caso ID: {case['id_caso']}")
-                    st.write(f"Documentos encontrados: {len(documents)}")
-                    if not documents.empty:
-                        st.write("Columnas disponibles:", list(documents.columns))
-                        st.dataframe(documents, use_container_width=True)
                 
                 if documents.empty:
                     st.write("No hay documentos asociados a este caso.")
@@ -615,12 +608,8 @@ if page == "Dashboard":
                                     # Verificar que tenemos la ruta del storage
                                     ruta_valor = doc.get('ruta_storage', None)
                                     
-                                    # Debug temporal
-                                    st.write(f"🔍 Debug - Ruta raw: '{ruta_valor}' (tipo: {type(ruta_valor)})")
-                                    
                                     if pd.isna(ruta_valor) or ruta_valor is None or str(ruta_valor).strip() == '' or str(ruta_valor) == 'nan':
                                         st.error("❌ Sin ruta de archivo")
-                                        st.write(f"Debug: ruta_storage = '{ruta_valor}'")
                                     else:
                                         storage_path = str(doc['ruta_storage']).strip()
                                         
@@ -758,6 +747,44 @@ elif page == "Gestión Documental":
     with col3:
         if st.button("🔧 Arreglar rutas faltantes"):
             fix_missing_file_paths()
+
+    # Botón adicional para listar archivos en Supabase
+    if st.button("📂 Ver archivos en Supabase Storage"):
+        supabase_client = init_supabase_client()
+        if supabase_client:
+            try:
+                st.info("🔍 Listando archivos en bucket 'documentos_casos'...")
+                
+                # Listar archivos en el root del bucket
+                files = supabase_client.storage.from_("documentos_casos").list()
+                
+                if files:
+                    st.success(f"📁 Encontrados {len(files)} elementos:")
+                    for file_item in files:
+                        st.write(f"- {file_item}")
+                        
+                        # Si es una carpeta, listar su contenido
+                        if file_item.get('name') and '.' not in file_item.get('name', ''):
+                            try:
+                                folder_files = supabase_client.storage.from_("documentos_casos").list(path=file_item['name'])
+                                for sub_file in folder_files:
+                                    st.write(f"  └─ {file_item['name']}/{sub_file.get('name', sub_file)}")
+                            except:
+                                pass
+                else:
+                    st.warning("📁 El bucket está vacío o no se pueden listar archivos")
+                    
+            except Exception as e:
+                st.error(f"❌ Error al listar archivos: {e}")
+                if "401" in str(e) or "403" in str(e):
+                    st.markdown("""
+                    **Causa probable:** Necesita Service Role Key para listar archivos
+                    1. Vaya a Supabase → Settings → API
+                    2. Copie el Service Role Key (no el Anon Key) 
+                    3. Actualice sus secrets de Streamlit
+                    """)
+        else:
+            st.error("❌ Cliente Supabase no disponible")
 
     cases = get_cases_detailed()
     if cases.empty:
