@@ -50,16 +50,18 @@ except Exception as e:
 # --- Funciones de Lógica de Negocio (Backend) ---
 
 def run_procedure(proc_name, params=None):
-    """Ejecuta un procedimiento almacenado."""
+    """Ejecuta un procedimiento almacenado y devuelve True si tiene éxito."""
     conn = init_db_connection()
-    if conn is None: return
+    if conn is None: return False
     try:
         with conn.cursor() as cur:
             cur.callproc(proc_name, params)
             conn.commit()
+        return True
     except Exception as e:
         conn.rollback()
         st.error(f"Error al ejecutar el procedimiento: {e}")
+        return False
 
 def run_query(query, params=None):
     """Ejecuta una consulta SQL y devuelve los resultados como DataFrame."""
@@ -74,10 +76,8 @@ def run_query(query, params=None):
             else:
                 return pd.DataFrame()
     except Exception as e:
-        # En caso de un error de transacción abortada, intentar refrescar la conexión
         if "current transaction is aborted" in str(e):
-            st.cache_resource.clear() # Limpiar el cache para forzar una nueva conexión
-            conn = init_db_connection()
+            st.cache_resource.clear()
         st.error(f"Error al ejecutar la función: {e}")
         return pd.DataFrame()
 
@@ -133,12 +133,11 @@ if page == "Dashboard":
                     st.markdown(f"**Fecha de Apertura:** {case['fecha_apertura'].strftime('%d/%m/%Y')}")
                     st.markdown(f"**Descripción:**\n{case['descripcion']}")
 
-                    # Módulo de IA para Resumen
                     if model and st.button("Generar Resumen con IA", key=f"sum_{case['id_caso']}"):
                         with st.spinner("La IA está analizando el caso..."):
                             try:
                                 response = model.generate_content(
-                                    f"Resume el siguiente caso legal en 2 o 3 puntos clave, como si fueras un abogado senior revisándolo: Título: {case['titulo']}. Descripción: {case['descripcion']}."
+                                    f"Resume el siguiente caso legal en 2 o 3 puntos clave: Título: {case['titulo']}. Descripción: {case['descripcion']}."
                                 )
                                 st.success("**Resumen por IA:**")
                                 st.markdown(response.text)
@@ -154,11 +153,10 @@ if page == "Dashboard":
                         key=f"status_{case['id_caso']}"
                     )
                     if st.button("Actualizar Estado", key=f"upd_{case['id_caso']}"):
-                        run_procedure("actualizar_estado_caso", (case['id_caso'], new_status))
-                        st.toast("Estado actualizado.")
-                        st.rerun()
+                        if run_procedure("actualizar_estado_caso", (case['id_caso'], new_status)):
+                            st.toast("Estado actualizado.")
+                            st.rerun()
                 
-                # Sección de Documentos
                 st.markdown("---")
                 st.subheader("Documentos del Caso")
                 documents = get_documents_for_case(case['id_caso'])
@@ -213,9 +211,8 @@ elif page == "Crear Nuevo Caso":
             else:
                 client_id = client_map[selected_client_name]
                 lawyer_id = lawyer_map[selected_lawyer_name]
-                run_procedure("crear_caso", (case_title, case_description, client_id, lawyer_id))
-                st.success("¡Caso creado exitosamente!")
-
+                if run_procedure("crear_caso", (case_title, case_description, client_id, lawyer_id)):
+                    st.success("¡Caso creado exitosamente!")
 
 # --- Página de Gestión Documental ---
 elif page == "Gestión Documental":
@@ -236,7 +233,6 @@ elif page == "Gestión Documental":
                 case_id = case_map[selected_case_title]
                 file_bytes = uploaded_file.getvalue()
                 file_name = uploaded_file.name
-                
                 storage_path = f"{case_id}/{file_name}"
 
                 supabase_client = init_supabase_client()
@@ -244,16 +240,13 @@ elif page == "Gestión Documental":
                     try:
                         with st.spinner(f"Subiendo '{file_name}'..."):
                             supabase_client.storage.from_("documentos_casos").upload(file=file_bytes, path=storage_path, file_options={"content-type": uploaded_file.type})
-                            run_procedure("crear_documento", (file_name, doc_description, case_id, storage_path))
-                        st.success(f"¡Documento '{file_name}' subido y asociado al caso '{selected_case_title}'!")
+                            if run_procedure("crear_documento", (file_name, doc_description, case_id, storage_path)):
+                                st.success(f"¡Documento '{file_name}' subido y asociado al caso '{selected_case_title}'!")
                     except Exception as e:
                         if "duplicate" in str(e):
-                             st.warning(f"Un archivo con el nombre '{file_name}' ya existe en este caso. Por favor, cambie el nombre del archivo si desea subirlo de nuevo.")
+                             st.warning(f"Un archivo con el nombre '{file_name}' ya existe. Por favor, cambie el nombre del archivo.")
                         else:
                             st.error(f"Error al subir el archivo: {e}")
-                else:
-                    st.error("El cliente de almacenamiento no está inicializado.")
-
             else:
                 st.error("Por favor, seleccione un caso y un archivo para subir.")
 
@@ -278,9 +271,9 @@ elif page == "Gestionar Clientes y Abogados":
                 if not all([nombre_cli, apellido_cli, email_cli, telefono_cli, direccion_cli]):
                     st.error("Todos los campos son obligatorios.")
                 else:
-                    run_procedure("crear_cliente", (nombre_cli, apellido_cli, email_cli, telefono_cli, direccion_cli))
-                    st.success("¡Cliente guardado con éxito!")
-                    st.rerun()
+                    if run_procedure("crear_cliente", (nombre_cli, apellido_cli, email_cli, telefono_cli, direccion_cli)):
+                        st.success("¡Cliente guardado con éxito!")
+                        st.rerun()
         
         st.markdown("---")
         st.subheader("Lista de Clientes")
@@ -301,9 +294,9 @@ elif page == "Gestionar Clientes y Abogados":
                 if not all([nombre_abo, apellido_abo, especialidad_abo, email_abo, telefono_abo]):
                     st.error("Todos los campos son obligatorios.")
                 else:
-                    run_procedure("crear_abogado", (nombre_abo, apellido_abo, especialidad_abo, email_abo, telefono_abo))
-                    st.success("¡Abogado guardado con éxito!")
-                    st.rerun()
+                    if run_procedure("crear_abogado", (nombre_abo, apellido_abo, especialidad_abo, email_abo, telefono_abo)):
+                        st.success("¡Abogado guardado con éxito!")
+                        st.rerun()
 
         st.markdown("---")
         st.subheader("Lista de Abogados")
