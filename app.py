@@ -49,13 +49,41 @@ except Exception as e:
 
 # --- Funciones de Lógica de Negocio (Backend) ---
 
+def test_database_connection():
+    """Prueba la conexión a la base de datos y muestra el estado."""
+    conn = init_db_connection()
+    if conn is None:
+        st.error("❌ No se puede conectar a la base de datos. Verifique:")
+        st.markdown("""
+        - Las credenciales en st.secrets["database"]
+        - Que el servidor de base de datos esté ejecutándose
+        - La conectividad de red
+        """)
+        return False
+    else:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                conn.commit()
+            st.success("✅ Conexión a la base de datos exitosa")
+            return True
+        except Exception as e:
+            st.error(f"❌ Error al probar la conexión: {e}")
+            return False
+
 def run_procedure(proc_name, params=None):
     """Ejecuta un procedimiento almacenado y devuelve True si tiene éxito."""
     conn = init_db_connection()
     if conn is None: return False
     try:
         with conn.cursor() as cur:
-            cur.callproc(proc_name, params)
+            if params:
+                # Crear la consulta CALL con parámetros
+                placeholders = ', '.join(['%s'] * len(params))
+                call_query = f"CALL {proc_name}({placeholders})"
+                cur.execute(call_query, params)
+            else:
+                cur.execute(f"CALL {proc_name}()")
             conn.commit()
         return True
     except Exception as e:
@@ -70,22 +98,40 @@ def run_query(query, params=None):
     try:
         with conn.cursor() as cur:
             cur.execute(query, params)
+            conn.commit()  # Commit para evitar transacciones abortadas
             if cur.description:
                 columns = [desc[0] for desc in cur.description]
                 return pd.DataFrame(cur.fetchall(), columns=columns)
             else:
                 return pd.DataFrame()
     except Exception as e:
+        conn.rollback()  # Rollback en caso de error
         if "current transaction is aborted" in str(e):
             st.cache_resource.clear()
         st.error(f"Error al ejecutar la función: {e}")
         return pd.DataFrame()
 
 def get_clients():
-    return run_query("SELECT id_cliente, nombre || ' ' || apellido as nombre_completo FROM clientes ORDER BY nombre;")
+    try:
+        result = run_query("SELECT id_cliente, nombre || ' ' || apellido as nombre_completo FROM clientes ORDER BY nombre;")
+        if result.empty:
+            # Retornar DataFrame vacío con columnas esperadas si no hay datos
+            return pd.DataFrame(columns=['id_cliente', 'nombre_completo'])
+        return result
+    except Exception as e:
+        st.error(f"Error al obtener clientes: {e}")
+        return pd.DataFrame(columns=['id_cliente', 'nombre_completo'])
 
 def get_lawyers():
-    return run_query("SELECT id_abogado, nombre || ' ' || apellido as nombre_completo FROM abogados ORDER BY nombre;")
+    try:
+        result = run_query("SELECT id_abogado, nombre || ' ' || apellido as nombre_completo FROM abogados ORDER BY nombre;")
+        if result.empty:
+            # Retornar DataFrame vacío con columnas esperadas si no hay datos
+            return pd.DataFrame(columns=['id_abogado', 'nombre_completo'])
+        return result
+    except Exception as e:
+        st.error(f"Error al obtener abogados: {e}")
+        return pd.DataFrame(columns=['id_abogado', 'nombre_completo'])
 
 def get_cases_detailed():
     return run_query("SELECT * FROM obtener_casos_detallados();")
@@ -120,6 +166,11 @@ st.markdown("---")
 # --- Página del Dashboard ---
 if page == "Dashboard":
     st.header("📊 Dashboard de Casos")
+    
+    # Probar conexión a la base de datos
+    if not test_database_connection():
+        st.stop()
+    
     cases = get_cases_detailed()
 
     if cases.empty:
@@ -130,7 +181,15 @@ if page == "Dashboard":
                 col1, col2 = st.columns([3, 2])
                 with col1:
                     st.markdown(f"**Abogado Asignado:** {case['abogado']}")
-                    st.markdown(f"**Fecha de Apertura:** {case['fecha_apertura'].strftime('%d/%m/%Y')}")
+                    # Manejar formato de fecha independientemente del tipo
+                    try:
+                        if hasattr(case['fecha_apertura'], 'strftime'):
+                            fecha_str = case['fecha_apertura'].strftime('%d/%m/%Y')
+                        else:
+                            fecha_str = str(case['fecha_apertura'])
+                        st.markdown(f"**Fecha de Apertura:** {fecha_str}")
+                    except Exception:
+                        st.markdown(f"**Fecha de Apertura:** {case['fecha_apertura']}")
                     st.markdown(f"**Descripción:**\n{case['descripcion']}")
 
                     if model and st.button("Generar Resumen con IA", key=f"sum_{case['id_caso']}"):
@@ -146,10 +205,16 @@ if page == "Dashboard":
 
                 with col2:
                     st.subheader("Estado del Caso")
+                    status_options = ["Abierto", "En Progreso", "Cerrado", "Archivado"]
+                    try:
+                        current_index = status_options.index(case['estado']) if case['estado'] in status_options else 0
+                    except (KeyError, ValueError):
+                        current_index = 0
+                    
                     new_status = st.selectbox(
                         "Cambiar estado",
-                        ["Abierto", "En Progreso", "Cerrado", "Archivado"],
-                        index=["Abierto", "En Progreso", "Cerrado", "Archivado"].index(case['estado']),
+                        status_options,
+                        index=current_index,
                         key=f"status_{case['id_caso']}"
                     )
                     if st.button("Actualizar Estado", key=f"upd_{case['id_caso']}"):
@@ -167,7 +232,15 @@ if page == "Dashboard":
                     for idx, doc in documents.iterrows():
                         doc_col1, doc_col2 = st.columns([4, 1])
                         with doc_col1:
-                            st.write(f"📄 **{doc['nombre_archivo']}** - Subido: {doc['fecha_subida'].strftime('%d/%m/%Y %H:%M')}")
+                            # Manejar formato de fecha para documentos
+                            try:
+                                if hasattr(doc['fecha_subida'], 'strftime'):
+                                    fecha_str = doc['fecha_subida'].strftime('%d/%m/%Y %H:%M')
+                                else:
+                                    fecha_str = str(doc['fecha_subida'])
+                                st.write(f"📄 **{doc['nombre_archivo']}** - Subido: {fecha_str}")
+                            except Exception:
+                                st.write(f"📄 **{doc['nombre_archivo']}** - Subido: {doc['fecha_subida']}")
                         with doc_col2:
                             if supabase_client:
                                 try:
@@ -180,6 +253,10 @@ if page == "Dashboard":
 # --- Página de Creación de Casos ---
 elif page == "Crear Nuevo Caso":
     st.header("➕ Crear Nuevo Caso")
+    
+    # Verificar conexión antes de continuar
+    if not test_database_connection():
+        st.stop()
     
     clients = get_clients()
     lawyers = get_lawyers()
@@ -217,6 +294,10 @@ elif page == "Crear Nuevo Caso":
 # --- Página de Gestión Documental ---
 elif page == "Gestión Documental":
     st.header("📂 Gestión Documental")
+    
+    # Verificar conexión antes de continuar
+    if not test_database_connection():
+        st.stop()
 
     cases = get_cases_detailed()
     if cases.empty:
@@ -254,6 +335,10 @@ elif page == "Gestión Documental":
 # --- Página de Gestión de Clientes y Abogados ---
 elif page == "Gestionar Clientes y Abogados":
     st.header("👥 Gestión de Clientes y Abogados")
+    
+    # Verificar conexión antes de continuar
+    if not test_database_connection():
+        st.stop()
 
     tab1, tab2 = st.tabs(["Clientes", "Abogados"])
 
@@ -302,4 +387,3 @@ elif page == "Gestionar Clientes y Abogados":
         st.subheader("Lista de Abogados")
         abogados_df = run_query("SELECT nombre, apellido, especialidad, email, telefono FROM abogados ORDER BY nombre, apellido;")
         st.dataframe(abogados_df, use_container_width=True)
-
