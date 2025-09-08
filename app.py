@@ -663,25 +663,6 @@ if page == "Dashboard":
                                 else:
                                     st.error("❌ Cliente Supabase no disponible")
                             
-                            # Vista previa automática para PDFs (fuera de las columnas)
-                            if supabase_client:
-                                ruta_valor = doc.get('ruta_storage', None)
-                                if not (pd.isna(ruta_valor) or ruta_valor is None or str(ruta_valor).strip() == ''):
-                                    storage_path = str(doc['ruta_storage']).strip()
-                                    file_exists = check_file_exists_in_supabase(storage_path)
-                                    
-                                    if file_exists and doc['nombre_archivo'].lower().endswith('.pdf'):
-                                        try:
-                                            response = supabase_client.storage.from_("documentos_casos").create_signed_url(storage_path, 3600)
-                                            if response and 'signedURL' in response:
-                                                with st.expander("👁️ Vista Previa del PDF", expanded=False):
-                                                    st.markdown(f"""
-                                                    <iframe src="{response['signedURL']}" width="100%" height="600" style="border: 1px solid #ccc;">
-                                                        <p>Su navegador no soporta iframes. <a href="{response['signedURL']}" target="_blank">Haga clic aquí para abrir el PDF</a>.</p>
-                                                    </iframe>
-                                                    """, unsafe_allow_html=True)
-                                        except:
-                                            pass
 
 
 # --- Página de Creación de Casos ---
