@@ -313,7 +313,7 @@ def login_user(email: str, password: str) -> dict:
         if auth_response.user:
             user_id = auth_response.user.id
             
-            # Obtener perfil del usuario
+            # Obtener perfil del usuario desde Supabase
             profile_response = supabase_client.table("perfiles").select("*").eq("id", user_id).execute()
             
             if profile_response.data:
@@ -325,6 +325,26 @@ def login_user(email: str, password: str) -> dict:
                     "rol": profile.get("rol", "usuario"),
                     "token": create_jwt_token(user_id, email)
                 }
+            else:
+                # Fallback: buscar en PostgreSQL directo si Supabase no tiene el perfil
+                try:
+                    conn = init_db_connection()
+                    if conn:
+                        with conn.cursor() as cur:
+                            cur.execute("SELECT nombre_completo, rol FROM perfiles WHERE id = %s", (user_id,))
+                            perfil = cur.fetchone()
+                            
+                            if perfil:
+                                return {
+                                    "id": user_id,
+                                    "email": email,
+                                    "nombre_completo": perfil[0] or email,
+                                    "rol": perfil[1] or "usuario",
+                                    "token": create_jwt_token(user_id, email)
+                                }
+                except Exception as fallback_error:
+                    st.warning(f"Error en fallback PostgreSQL: {fallback_error}")
+        
         return None
         
     except Exception as e:
@@ -357,21 +377,22 @@ def refresh_user_data():
         if not user_id:
             st.error(f"❌ No se encontró ID de usuario. Intente cerrar sesión y volver a iniciar.")
             return False
-            
-        # Obtener datos actualizados del perfil
-        conn = init_db_connection()
-        if conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT nombre_completo, rol FROM perfiles WHERE id = %s", (user_id,))
-                perfil = cur.fetchone()
+        
+        # Obtener datos actualizados usando Supabase (mismo método que login)
+        try:
+            supabase_client = init_supabase_direct()
+            if supabase_client:
+                profile_response = supabase_client.table("perfiles").select("*").eq("id", user_id).execute()
                 
-                if perfil:
+                if profile_response.data:
+                    profile = profile_response.data[0]
+                    
                     # Actualizar session state con datos frescos
                     old_role = st.session_state.user_data.get('rol', 'N/A')
-                    new_role = perfil[1]
+                    new_role = profile.get("rol", "usuario")
                     
                     st.session_state.user_data.update({
-                        'nombre_completo': perfil[0],
+                        'nombre_completo': profile.get("nombre_completo", ""),
                         'rol': new_role
                     })
                     
@@ -381,11 +402,39 @@ def refresh_user_data():
                     
                     return True
                 else:
-                    st.error(f"❌ No se encontró perfil para el usuario ID: {user_id}")
+                    st.error(f"❌ No se encontró perfil en Supabase para ID: {user_id}")
                     return False
-        else:
-            st.error("❌ No se pudo conectar a la base de datos")
-            return False
+        except Exception as supabase_error:
+            st.warning(f"⚠️ Error con Supabase, intentando con PostgreSQL directo...")
+            
+            # Fallback a PostgreSQL directo
+            conn = init_db_connection()
+            if conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT nombre_completo, rol FROM perfiles WHERE id = %s", (user_id,))
+                    perfil = cur.fetchone()
+                    
+                    if perfil:
+                        # Actualizar session state con datos frescos
+                        old_role = st.session_state.user_data.get('rol', 'N/A')
+                        new_role = perfil[1]
+                        
+                        st.session_state.user_data.update({
+                            'nombre_completo': perfil[0],
+                            'rol': new_role
+                        })
+                        
+                        # Log del cambio
+                        if old_role != new_role:
+                            st.success(f"🔄 Rol actualizado: {old_role} → {new_role}")
+                        
+                        return True
+                    else:
+                        st.error(f"❌ No se encontró perfil en PostgreSQL para ID: {user_id}")
+                        return False
+            else:
+                st.error("❌ No se pudo conectar a ninguna base de datos")
+                return False
         
     except Exception as e:
         st.error(f"Error al refrescar datos del usuario: {e}")
@@ -1235,6 +1284,10 @@ if st.session_state.get('authenticated', False):
     current_user_data = st.session_state.get('user_data', {})
     current_role = current_user_data.get('rol', 'N/A')
     st.sidebar.info(f"Debug - Rol actual: {current_role}")
+    
+    # Debug adicional para ver todos los datos
+    with st.sidebar.expander("🔧 Debug Completo", expanded=False):
+        st.json(current_user_data)
 
 # Construir lista de módulos basada en permisos del usuario
 available_modules = []
@@ -2723,21 +2776,35 @@ elif page == "🔧 Gestión de Usuarios":
         with col_sync2:
             # Mostrar rol actual vs rol en BD
             try:
-                current_user_id = st.session_state.get('user_data', {}).get('id')
+                current_user_id = st.session_state.get('user_data', {}).get('id') or st.session_state.get('user_data', {}).get('user_id')
                 session_role = st.session_state.get('user_data', {}).get('rol', 'N/A')
                 
-                conn = init_db_connection()
-                if conn and current_user_id:
-                    with conn.cursor() as cur:
-                        cur.execute("SELECT rol FROM perfiles WHERE id = %s", (current_user_id,))
-                        db_role = cur.fetchone()
-                        db_role = db_role[0] if db_role else 'N/A'
+                st.info(f"**Sesión:** {session_role}")
+                st.info(f"**User ID:** {current_user_id}")
+                
+                if current_user_id:
+                    # Verificar en ambas bases de datos
+                    conn = init_db_connection()
+                    if conn:
+                        with conn.cursor() as cur:
+                            cur.execute("SELECT rol FROM perfiles WHERE id = %s", (current_user_id,))
+                            db_role = cur.fetchone()
+                            db_role = db_role[0] if db_role else 'No encontrado'
+                            
+                            st.info(f"**PostgreSQL:** {db_role}")
+                    
+                    # También verificar en Supabase
+                    try:
+                        supabase_client = init_supabase_direct()
+                        if supabase_client:
+                            profile_response = supabase_client.table("perfiles").select("rol").eq("id", current_user_id).execute()
+                            supabase_role = profile_response.data[0].get("rol", "No encontrado") if profile_response.data else "No encontrado"
+                            st.info(f"**Supabase:** {supabase_role}")
+                    except Exception as e:
+                        st.warning(f"Error Supabase: {e}")
                         
-                        st.info(f"**Sesión:** {session_role}")
-                        st.info(f"**Base de Datos:** {db_role}")
-                        
-                        if session_role != db_role:
-                            st.warning("⚠️ Los roles no coinciden - presiona 'Refrescar Mi Rol'")
+                    if session_role != db_role:
+                        st.warning("⚠️ Los roles no coinciden - presiona 'Refrescar Mi Rol'")
             except Exception as e:
                 st.warning(f"No se pudo verificar sincronización: {e}")
         
