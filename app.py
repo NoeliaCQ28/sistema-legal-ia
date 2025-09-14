@@ -202,6 +202,14 @@ def has_permission(permission: str) -> bool:
     user_data = st.session_state.get('user_data', {})
     user_role = user_data.get('rol', 'cliente').lower()
     
+    # FORZAR administrador para usuarios bootstrap
+    current_email = user_data.get('email', '').lower()
+    if current_email in ['noe@gmail.com', 'noelia.cq28@gmail.com']:
+        user_role = 'administrador'
+        # Actualizar también el session state si es necesario
+        if st.session_state.user_data.get('rol', '').lower() != 'administrador':
+            st.session_state.user_data['rol'] = 'administrador'
+    
     # Normalizar nombres de roles
     role_mapping = {
         'admin': 'administrador',
@@ -794,6 +802,14 @@ def show_user_info():
     if check_authentication() and st.session_state.get('user_data'):
         user_data = st.session_state.user_data
         user_role = user_data.get('rol', 'cliente')
+        
+        # FORZAR actualización en tiempo real para usuarios bootstrap
+        current_email = user_data.get('email', '').lower()
+        if current_email in ['noe@gmail.com', 'noelia.cq28@gmail.com'] and user_role.lower() != 'administrador':
+            # Forzar rol administrador inmediatamente
+            st.session_state.user_data['rol'] = 'administrador'
+            user_role = 'administrador'
+            st.sidebar.success("🔄 Rol actualizado automáticamente")
         
         st.sidebar.markdown("---")
         st.sidebar.markdown("**👤 Usuario Actual**")
@@ -2811,6 +2827,21 @@ elif page == "🔧 Gestión de Usuarios":
                         st.rerun()
                     else:
                         st.error("❌ Solo usuarios autorizados pueden usar esta función")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+                    
+            # Botón de reinicio completo
+            if st.button("🔄 Reinicio Completo", type="secondary", help="Cierra sesión y obliga a login nuevo"):
+                try:
+                    current_email = st.session_state.get('user_data', {}).get('email', '')
+                    
+                    # Limpiar completamente session state
+                    for key in list(st.session_state.keys()):
+                        del st.session_state[key]
+                    
+                    st.success(f"🔄 Sesión limpiada. Por favor, inicia sesión nuevamente con {current_email}")
+                    st.info("🔑 Usa la misma contraseña de siempre")
+                    st.rerun()
                 except Exception as e:
                     st.error(f"Error: {e}")
         
