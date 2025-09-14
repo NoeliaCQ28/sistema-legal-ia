@@ -1229,6 +1229,13 @@ show_user_info()
 
 st.sidebar.title("Menú de Navegación")
 st.sidebar.markdown("Seleccione un Módulo")
+
+# Debug temporal: mostrar rol actual
+if st.session_state.get('authenticated', False):
+    current_user_data = st.session_state.get('user_data', {})
+    current_role = current_user_data.get('rol', 'N/A')
+    st.sidebar.info(f"Debug - Rol actual: {current_role}")
+
 # Construir lista de módulos basada en permisos del usuario
 available_modules = []
 
@@ -1280,6 +1287,15 @@ st.sidebar.markdown("---")
 # Botón de reinicio de conexión en la barra lateral
 if st.sidebar.button("🔄 Reiniciar Conexión DB"):
     reset_database_connection()
+
+# Botón de emergencia para refrescar permisos
+if st.session_state.get('authenticated', False):
+    if st.sidebar.button("🔄 Refrescar Permisos", help="Actualiza los permisos desde la base de datos"):
+        if refresh_user_data():
+            st.success("✅ Permisos actualizados!")
+            st.rerun()
+        else:
+            st.error("❌ Error al actualizar permisos")
 
 st.sidebar.info(
     """
@@ -1700,6 +1716,14 @@ elif page == "👤 Mi Perfil":
                     with col2:
                         st.info(f"**Rol:** {perfil_actual[2] if len(perfil_actual) > 2 else 'N/A'}")
                         st.info(f"**ID de Usuario:** {user_id}")
+                        
+                        # Botón para refrescar permisos
+                        if st.button("🔄 Refrescar Permisos", use_container_width=True, help="Actualiza los permisos en la sesión actual"):
+                            if refresh_user_data():
+                                st.success("✅ Permisos actualizados!")
+                                st.rerun()
+                            else:
+                                st.error("❌ Error al actualizar permisos")
                     
                     st.markdown("---")
                     
@@ -1839,10 +1863,15 @@ elif page == "👤 Mi Perfil":
                                 conn.commit()
                                 
                                 # Refrescar datos del usuario en session state
-                                refresh_user_data()
+                                if refresh_user_data():
+                                    st.success(f"✅ Perfil recreado/actualizado exitosamente! Rol asignado: {rol_asignado}")
+                                    st.info("🔄 Actualizando interfaz con nuevos permisos...")
+                                    # Forzar actualización completa de la página
+                                    st.balloons()
+                                    st.rerun()
+                                else:
+                                    st.warning("⚠️ Perfil creado pero hubo problemas al actualizar la sesión. Cierre sesión y vuelva a entrar.")
                                 
-                                st.success(f"✅ Perfil recreado/actualizado exitosamente! Rol asignado: {rol_asignado}")
-                                st.rerun()
                             except Exception as e:
                                 st.error(f"❌ Error al recrear perfil: {e}")
                                 st.code(f"User ID intentado: {user_id_para_perfil if 'user_id_para_perfil' in locals() else 'No definido'}")
