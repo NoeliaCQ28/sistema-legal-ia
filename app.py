@@ -113,7 +113,145 @@ def verify_jwt_token(token: str) -> dict:
     except jwt.InvalidTokenError:
         return None
 
-def register_user(email: str, password: str, nombre_completo: str) -> bool:
+# --- Sistema de Control de Acceso Basado en Roles (RBAC) ---
+def get_role_permissions():
+    """Define los permisos para cada rol"""
+    return {
+        "administrador": {
+            "dashboard": True,
+            "crear_caso": True,
+            "gestion_documental": True,
+            "gestionar_usuarios": True,
+            "mi_perfil": True,
+            "reportes": True,
+            "agenda": True,
+            "notificaciones": True,
+            "tareas": True,
+            "ver_todos_casos": True,
+            "editar_todos_casos": True,
+            "eliminar_casos": True,
+            "gestionar_roles": True
+        },
+        "socio": {
+            "dashboard": True,
+            "crear_caso": True,
+            "gestion_documental": True,
+            "gestionar_usuarios": False,
+            "mi_perfil": True,
+            "reportes": True,
+            "agenda": True,
+            "notificaciones": True,
+            "tareas": True,
+            "ver_todos_casos": True,
+            "editar_todos_casos": True,
+            "eliminar_casos": False,
+            "gestionar_roles": False
+        },
+        "abogado_senior": {
+            "dashboard": True,
+            "crear_caso": True,
+            "gestion_documental": True,
+            "gestionar_usuarios": False,
+            "mi_perfil": True,
+            "reportes": True,
+            "agenda": True,
+            "notificaciones": True,
+            "tareas": True,
+            "ver_todos_casos": False,
+            "editar_todos_casos": False,
+            "eliminar_casos": False,
+            "gestionar_roles": False
+        },
+        "abogado_junior": {
+            "dashboard": True,
+            "crear_caso": False,
+            "gestion_documental": True,
+            "gestionar_usuarios": False,
+            "mi_perfil": True,
+            "reportes": False,
+            "agenda": True,
+            "notificaciones": True,
+            "tareas": True,
+            "ver_todos_casos": False,
+            "editar_todos_casos": False,
+            "eliminar_casos": False,
+            "gestionar_roles": False
+        },
+        "cliente": {
+            "dashboard": True,
+            "crear_caso": False,
+            "gestion_documental": False,
+            "gestionar_usuarios": False,
+            "mi_perfil": True,
+            "reportes": False,
+            "agenda": False,
+            "notificaciones": True,
+            "tareas": False,
+            "ver_todos_casos": False,
+            "editar_todos_casos": False,
+            "eliminar_casos": False,
+            "gestionar_roles": False
+        }
+    }
+
+def has_permission(permission: str) -> bool:
+    """Verifica si el usuario actual tiene un permiso específico"""
+    if not check_authentication():
+        return False
+    
+    user_data = st.session_state.get('user_data', {})
+    user_role = user_data.get('rol', 'cliente').lower()
+    
+    # Normalizar nombres de roles
+    role_mapping = {
+        'admin': 'administrador',
+        'administrador': 'administrador',
+        'socio': 'socio',
+        'director': 'socio',
+        'abogado_senior': 'abogado_senior',
+        'senior': 'abogado_senior',
+        'abogado_junior': 'abogado_junior',
+        'junior': 'abogado_junior',
+        'cliente': 'cliente',
+        'usuario': 'cliente'  # Por defecto, usuario = cliente
+    }
+    
+    normalized_role = role_mapping.get(user_role, 'cliente')
+    permissions = get_role_permissions()
+    
+    return permissions.get(normalized_role, {}).get(permission, False)
+
+def require_permission(permission: str):
+    """Decorator/helper para requerir un permiso específico"""
+    if not has_permission(permission):
+        st.error("🚫 No tienes permisos para acceder a esta funcionalidad")
+        st.info(f"Permiso requerido: {permission}")
+        st.stop()
+
+def get_user_role() -> str:
+    """Obtiene el rol del usuario actual"""
+    if not check_authentication():
+        return "invitado"
+    
+    user_data = st.session_state.get('user_data', {})
+    return user_data.get('rol', 'cliente').lower()
+
+def get_available_roles() -> list:
+    """Retorna la lista de roles disponibles"""
+    return ["administrador", "socio", "abogado_senior", "abogado_junior", "cliente"]
+
+def get_role_display_name(role: str) -> str:
+    """Convierte el nombre técnico del rol a nombre para mostrar"""
+    role_names = {
+        "administrador": "🔧 Administrador",
+        "socio": "⚖️ Socio/Director", 
+        "abogado_senior": "👨‍💼 Abogado Senior",
+        "abogado_junior": "👩‍💼 Abogado Junior",
+        "cliente": "💼 Cliente"
+    }
+    return role_names.get(role.lower(), role)
+
+def register_user(email: str, password: str, nombre_completo: str, rol: str = "cliente") -> bool:
     """Registra un nuevo usuario en Supabase Auth y en la tabla perfiles"""
     try:
         # Intentar con st.connection primero
@@ -140,7 +278,7 @@ def register_user(email: str, password: str, nombre_completo: str) -> bool:
             profile_data = {
                 "id": user_id,
                 "nombre_completo": nombre_completo,
-                "rol": "usuario"
+                "rol": rol.lower()
             }
             
             supabase_client.table("perfiles").insert(profile_data).execute()
@@ -282,6 +420,31 @@ def show_login_page():
             reg_password = st.text_input("Contraseña", type="password", key="reg_password")
             reg_confirm_password = st.text_input("Confirmar Contraseña", type="password", key="reg_confirm")
             
+            # Selección de rol (solo visible si hay un admin logueado o es el primer usuario)
+            reg_rol = "cliente"  # Por defecto
+            
+            # Verificar si el usuario actual es admin para permitir selección de rol
+            current_user_is_admin = False
+            if 'user_data' in st.session_state:
+                current_role = st.session_state.user_data.get('rol', '').lower()
+                current_user_is_admin = current_role in ['administrador', 'admin']
+            
+            if current_user_is_admin:
+                st.markdown("---")
+                st.markdown("**🔐 Configuración de Rol (Solo Administradores)**")
+                role_options = get_available_roles()
+                role_labels = [get_role_display_name(role) for role in role_options]
+                
+                selected_role_index = st.selectbox(
+                    "Seleccionar Rol",
+                    range(len(role_options)),
+                    format_func=lambda x: role_labels[x],
+                    index=4  # Default to "cliente"
+                )
+                reg_rol = role_options[selected_role_index]
+            else:
+                st.info("💡 Las nuevas cuentas se crearán con rol de Cliente por defecto")
+            
             if st.form_submit_button("Registrarse", use_container_width=True):
                 if all([reg_nombre, reg_email, reg_password, reg_confirm_password]):
                     if reg_password != reg_confirm_password:
@@ -290,8 +453,11 @@ def show_login_page():
                         st.error("La contraseña debe tener al menos 6 caracteres")
                     else:
                         with st.spinner("Creando cuenta..."):
-                            if register_user(reg_email, reg_password, reg_nombre):
-                                st.success("¡Cuenta creada exitosamente! Revise su email para confirmar y luego inicie sesión.")
+                            if register_user(reg_email, reg_password, reg_nombre, reg_rol):
+                                success_msg = f"¡Cuenta creada exitosamente como {get_role_display_name(reg_rol)}!"
+                                if not current_user_is_admin:
+                                    success_msg += " Revise su email para confirmar y luego inicie sesión."
+                                st.success(success_msg)
                             else:
                                 st.error("Error al crear la cuenta. El email podría estar ya registrado.")
                 else:
@@ -301,12 +467,27 @@ def show_user_info():
     """Muestra información del usuario en la sidebar"""
     if check_authentication() and st.session_state.get('user_data'):
         user_data = st.session_state.user_data
+        user_role = user_data.get('rol', 'cliente')
         
         st.sidebar.markdown("---")
         st.sidebar.markdown("**👤 Usuario Actual**")
         st.sidebar.markdown(f"**{user_data.get('nombre_completo', 'Usuario')}**")
         st.sidebar.markdown(f"*{user_data.get('email', '')}*")
-        st.sidebar.markdown(f"Rol: {user_data.get('rol', 'usuario')}")
+        
+        # Mostrar rol con emoji
+        role_display = get_role_display_name(user_role)
+        st.sidebar.markdown(f"**{role_display}**")
+        
+        # Mostrar permisos del rol
+        with st.sidebar.expander("🔐 Permisos del Rol", expanded=False):
+            permissions = get_role_permissions().get(user_role.lower(), {})
+            
+            st.write("**Accesos permitidos:**")
+            for perm, allowed in permissions.items():
+                if allowed and perm not in ['ver_todos_casos', 'editar_todos_casos', 'eliminar_casos', 'gestionar_roles']:
+                    icon = "✅" if allowed else "❌"
+                    perm_name = perm.replace('_', ' ').title()
+                    st.write(f"{icon} {perm_name}")
         
         if st.sidebar.button("🚪 Cerrar Sesión", use_container_width=True):
             logout_user()
@@ -785,7 +966,43 @@ show_user_info()
 
 st.sidebar.title("Menú de Navegación")
 st.sidebar.markdown("Seleccione un Módulo")
-page = st.sidebar.radio("Módulos", ["Dashboard", "Crear Nuevo Caso", "Gestión Documental", "Gestionar Clientes y Abogados", "Mi Perfil"], label_visibility="hidden")
+# Construir lista de módulos basada en permisos del usuario
+available_modules = []
+
+# Agregar módulos según permisos
+if has_permission("dashboard"):
+    available_modules.append("📊 Dashboard")
+
+if has_permission("crear_caso"):
+    available_modules.append("➕ Crear Nuevo Caso")
+
+if has_permission("gestion_documental"):
+    available_modules.append("📂 Gestión Documental")
+
+if has_permission("gestionar_usuarios"):
+    available_modules.append("👥 Gestionar Clientes y Abogados")
+
+if has_permission("reportes"):
+    available_modules.append("📈 Reportes y Analytics")
+
+if has_permission("agenda"):
+    available_modules.append("📅 Agenda y Calendario")
+
+if has_permission("notificaciones"):
+    available_modules.append("🔔 Notificaciones")
+
+if has_permission("tareas"):
+    available_modules.append("📋 Tareas y Workflow")
+
+# Mi Perfil siempre disponible para usuarios autenticados
+if has_permission("mi_perfil"):
+    available_modules.append("👤 Mi Perfil")
+
+# Solo mostrar Gestión de Usuarios si es admin
+if has_permission("gestionar_roles"):
+    available_modules.append("🔧 Gestión de Usuarios")
+
+page = st.sidebar.radio("Módulos", available_modules, label_visibility="hidden")
 
 st.sidebar.markdown("---")
 
@@ -811,8 +1028,9 @@ st.markdown("---")
 
 
 # --- Página del Dashboard ---
-if page == "Dashboard":
+if page == "📊 Dashboard":
     st.header("📊 Dashboard de Casos")
+    require_permission("dashboard")
     
     # Probar conexión a la base de datos
     if not test_database_connection():
@@ -939,8 +1157,9 @@ if page == "Dashboard":
 
 
 # --- Página de Creación de Casos ---
-elif page == "Crear Nuevo Caso":
+elif page == "➕ Crear Nuevo Caso":
     st.header("➕ Crear Nuevo Caso")
+    require_permission("crear_caso")
     
     # Verificar conexión antes de continuar
     if not test_database_connection():
@@ -980,8 +1199,9 @@ elif page == "Crear Nuevo Caso":
                     st.success("¡Caso creado exitosamente!")
 
 # --- Página de Gestión Documental ---
-elif page == "Gestión Documental":
+elif page == "📂 Gestión Documental":
     st.header("📂 Gestión Documental")
+    require_permission("gestion_documental")
     
     # Verificar conexión antes de continuar
     if not test_database_connection():
@@ -1120,8 +1340,9 @@ elif page == "Gestión Documental":
 
 
 # --- Página de Gestión de Clientes y Abogados ---
-elif page == "Gestionar Clientes y Abogados":
+elif page == "👥 Gestionar Clientes y Abogados":
     st.header("👥 Gestión de Clientes y Abogados")
+    require_permission("gestionar_usuarios")
     
     # Verificar conexión antes de continuar
     if not test_database_connection():
@@ -1176,8 +1397,9 @@ elif page == "Gestionar Clientes y Abogados":
         st.dataframe(abogados_df, use_container_width=True)
 
 # --- Página de Gestión de Perfil ---
-elif page == "Mi Perfil":
+elif page == "👤 Mi Perfil":
     st.header("👤 Mi Perfil")
+    require_permission("mi_perfil")
     
     if not check_authentication():
         st.error("Debe estar autenticado para ver esta página")
@@ -1323,3 +1545,710 @@ elif page == "Mi Perfil":
         st.error(f"❌ Error al cargar perfil: {e}")
         if not test_database_connection():
             st.stop()
+
+# --- Página de Reportes y Analytics ---
+elif page == "📈 Reportes y Analytics":
+    st.header("📈 Reportes y Analytics")
+    require_permission("reportes")
+    
+    st.subheader("📊 Métricas del Despacho")
+    
+    # Verificar conexión antes de continuar
+    if not test_database_connection():
+        st.stop()
+    
+    # Métricas generales
+    col1, col2, col3, col4 = st.columns(4)
+    
+    try:
+        # Total de casos
+        total_casos = run_query("SELECT COUNT(*) as total FROM casos").iloc[0]['total']
+        col1.metric("📋 Total de Casos", total_casos)
+        
+        # Casos activos
+        casos_activos = run_query("SELECT COUNT(*) as activos FROM casos WHERE estado IN ('Abierto', 'En Progreso')").iloc[0]['activos']
+        col2.metric("🔄 Casos Activos", casos_activos)
+        
+        # Total de clientes
+        total_clientes = run_query("SELECT COUNT(*) as total FROM clientes").iloc[0]['total']
+        col3.metric("👥 Total de Clientes", total_clientes)
+        
+        # Total de abogados
+        total_abogados = run_query("SELECT COUNT(*) as total FROM abogados").iloc[0]['total']
+        col4.metric("⚖️ Total de Abogados", total_abogados)
+        
+    except Exception as e:
+        st.error(f"Error al cargar métricas: {e}")
+    
+    st.markdown("---")
+    
+    # Gráficos y reportes
+    tab1, tab2, tab3 = st.tabs(["📊 Estados de Casos", "📈 Casos por Mes", "👨‍💼 Productividad"])
+    
+    with tab1:
+        st.subheader("Distribución de Estados de Casos")
+        try:
+            estados_data = run_query("""
+                SELECT estado, COUNT(*) as cantidad 
+                FROM casos 
+                GROUP BY estado 
+                ORDER BY cantidad DESC
+            """)
+            
+            if not estados_data.empty:
+                st.bar_chart(estados_data.set_index('estado'))
+                st.dataframe(estados_data, use_container_width=True)
+            else:
+                st.info("No hay datos de casos para mostrar")
+        except Exception as e:
+            st.error(f"Error al cargar datos de estados: {e}")
+    
+    with tab2:
+        st.subheader("Casos Creados por Mes")
+        try:
+            casos_mes = run_query("""
+                SELECT 
+                    TO_CHAR(fecha_apertura, 'YYYY-MM') as mes,
+                    COUNT(*) as casos_creados
+                FROM casos 
+                WHERE fecha_apertura >= CURRENT_DATE - INTERVAL '12 months'
+                GROUP BY TO_CHAR(fecha_apertura, 'YYYY-MM')
+                ORDER BY mes
+            """)
+            
+            if not casos_mes.empty:
+                st.line_chart(casos_mes.set_index('mes'))
+                st.dataframe(casos_mes, use_container_width=True)
+            else:
+                st.info("No hay datos de casos recientes para mostrar")
+        except Exception as e:
+            st.error(f"Error al cargar datos temporales: {e}")
+    
+    with tab3:
+        st.subheader("Casos por Abogado")
+        try:
+            productividad = run_query("""
+                SELECT 
+                    a.nombre || ' ' || a.apellido as abogado,
+                    COUNT(c.id_caso) as total_casos,
+                    COUNT(CASE WHEN c.estado IN ('Abierto', 'En Progreso') THEN 1 END) as casos_activos
+                FROM abogados a
+                LEFT JOIN casos c ON a.id_abogado = c.id_abogado
+                GROUP BY a.id_abogado, a.nombre, a.apellido
+                ORDER BY total_casos DESC
+            """)
+            
+            if not productividad.empty:
+                st.dataframe(productividad, use_container_width=True)
+                
+                # Gráfico de barras
+                st.bar_chart(productividad.set_index('abogado')['total_casos'])
+            else:
+                st.info("No hay datos de productividad para mostrar")
+        except Exception as e:
+            st.error(f"Error al cargar datos de productividad: {e}")
+
+# --- Página de Agenda y Calendario ---
+elif page == "📅 Agenda y Calendario":
+    st.header("📅 Agenda y Calendario")
+    require_permission("agenda")
+    
+    st.subheader("🗓️ Gestión de Citas y Eventos")
+    
+    # Verificar conexión antes de continuar
+    if not test_database_connection():
+        st.stop()
+    
+    # Crear tabla de eventos si no existe
+    try:
+        conn = init_db_connection()
+        if conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS eventos (
+                        id_evento SERIAL PRIMARY KEY,
+                        titulo VARCHAR(200) NOT NULL,
+                        descripcion TEXT,
+                        fecha_evento DATE NOT NULL,
+                        hora_inicio TIME,
+                        hora_fin TIME,
+                        id_caso INTEGER REFERENCES casos(id_caso),
+                        id_abogado INTEGER REFERENCES abogados(id_abogado),
+                        tipo_evento VARCHAR(50) DEFAULT 'cita',
+                        estado VARCHAR(50) DEFAULT 'programado',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
+                conn.commit()
+    except Exception as e:
+        st.warning(f"Advertencia al crear tabla de eventos: {e}")
+    
+    # Pestañas para diferentes vistas
+    tab1, tab2, tab3 = st.tabs(["📅 Ver Calendario", "➕ Nueva Cita", "📋 Próximos Eventos"])
+    
+    with tab1:
+        st.subheader("Vista de Calendario")
+        
+        # Selector de fecha
+        fecha_seleccionada = st.date_input("Seleccionar fecha", datetime.now().date())
+        
+        # Mostrar eventos del día
+        try:
+            eventos_dia = run_query("""
+                SELECT e.*, c.titulo as caso_titulo, a.nombre || ' ' || a.apellido as abogado_nombre
+                FROM eventos e
+                LEFT JOIN casos c ON e.id_caso = c.id_caso
+                LEFT JOIN abogados a ON e.id_abogado = a.id_abogado
+                WHERE e.fecha_evento = %s
+                ORDER BY e.hora_inicio
+            """, (fecha_seleccionada,))
+            
+            if not eventos_dia.empty:
+                st.success(f"📅 Eventos para {fecha_seleccionada.strftime('%d/%m/%Y')}")
+                for idx, evento in eventos_dia.iterrows():
+                    with st.expander(f"🕐 {evento['hora_inicio']} - {evento['titulo']}"):
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.write(f"**Descripción:** {evento['descripcion']}")
+                            st.write(f"**Tipo:** {evento['tipo_evento']}")
+                            st.write(f"**Estado:** {evento['estado']}")
+                        with col2:
+                            if evento['caso_titulo']:
+                                st.write(f"**Caso:** {evento['caso_titulo']}")
+                            if evento['abogado_nombre']:
+                                st.write(f"**Abogado:** {evento['abogado_nombre']}")
+                            st.write(f"**Horario:** {evento['hora_inicio']} - {evento['hora_fin']}")
+            else:
+                st.info(f"No hay eventos programados para {fecha_seleccionada.strftime('%d/%m/%Y')}")
+                
+        except Exception as e:
+            st.error(f"Error al cargar eventos: {e}")
+    
+    with tab2:
+        st.subheader("Programar Nueva Cita")
+        
+        with st.form("nueva_cita_form"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                titulo_evento = st.text_input("Título del Evento")
+                descripcion_evento = st.text_area("Descripción")
+                fecha_evento = st.date_input("Fecha", datetime.now().date())
+                
+            with col2:
+                hora_inicio = st.time_input("Hora de Inicio", datetime.now().time())
+                hora_fin = st.time_input("Hora de Fin", (datetime.now() + timedelta(hours=1)).time())
+                tipo_evento = st.selectbox("Tipo de Evento", 
+                    ["cita", "audiencia", "reunion", "deadline", "otro"])
+            
+            # Selección opcional de caso y abogado
+            casos = get_cases_detailed()
+            abogados = get_lawyers()
+            
+            caso_seleccionado = None
+            if not casos.empty:
+                caso_opciones = ["Ninguno"] + casos['titulo'].tolist()
+                caso_idx = st.selectbox("Caso Relacionado (Opcional)", range(len(caso_opciones)), 
+                    format_func=lambda x: caso_opciones[x])
+                if caso_idx > 0:
+                    caso_seleccionado = casos.iloc[caso_idx-1]['id_caso']
+            
+            abogado_seleccionado = None
+            if not abogados.empty:
+                abogado_opciones = ["Ninguno"] + abogados['nombre_completo'].tolist()
+                abogado_idx = st.selectbox("Abogado Asignado (Opcional)", range(len(abogado_opciones)),
+                    format_func=lambda x: abogado_opciones[x])
+                if abogado_idx > 0:
+                    abogado_seleccionado = abogados.iloc[abogado_idx-1]['id_abogado']
+            
+            if st.form_submit_button("📅 Programar Evento", use_container_width=True):
+                if titulo_evento and fecha_evento:
+                    try:
+                        conn = init_db_connection()
+                        if conn:
+                            with conn.cursor() as cur:
+                                cur.execute("""
+                                    INSERT INTO eventos (titulo, descripcion, fecha_evento, hora_inicio, hora_fin, 
+                                                       id_caso, id_abogado, tipo_evento)
+                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                """, (titulo_evento, descripcion_evento, fecha_evento, hora_inicio, 
+                                     hora_fin, caso_seleccionado, abogado_seleccionado, tipo_evento))
+                                conn.commit()
+                                st.success("✅ Evento programado exitosamente!")
+                                st.rerun()
+                    except Exception as e:
+                        st.error(f"Error al programar evento: {e}")
+                else:
+                    st.error("El título y la fecha son obligatorios")
+    
+    with tab3:
+        st.subheader("Próximos Eventos")
+        
+        try:
+            proximos_eventos = run_query("""
+                SELECT e.*, c.titulo as caso_titulo, a.nombre || ' ' || a.apellido as abogado_nombre
+                FROM eventos e
+                LEFT JOIN casos c ON e.id_caso = c.id_caso
+                LEFT JOIN abogados a ON e.id_abogado = a.id_abogado
+                WHERE e.fecha_evento >= CURRENT_DATE
+                ORDER BY e.fecha_evento, e.hora_inicio
+                LIMIT 20
+            """)
+            
+            if not proximos_eventos.empty:
+                st.dataframe(proximos_eventos[['titulo', 'fecha_evento', 'hora_inicio', 'tipo_evento', 'caso_titulo', 'abogado_nombre']], 
+                           use_container_width=True)
+            else:
+                st.info("No hay eventos próximos programados")
+                
+        except Exception as e:
+            st.error(f"Error al cargar próximos eventos: {e}")
+
+# --- Página de Notificaciones ---
+elif page == "🔔 Notificaciones":
+    st.header("🔔 Notificaciones y Alertas")
+    require_permission("notificaciones")
+    
+    st.subheader("📬 Centro de Notificaciones")
+    
+    # Crear tabla de notificaciones si no existe
+    try:
+        conn = init_db_connection()
+        if conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS notificaciones (
+                        id_notificacion SERIAL PRIMARY KEY,
+                        titulo VARCHAR(200) NOT NULL,
+                        mensaje TEXT NOT NULL,
+                        tipo VARCHAR(50) DEFAULT 'info',
+                        usuario_id UUID,
+                        leida BOOLEAN DEFAULT FALSE,
+                        fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        fecha_expiracion DATE
+                    );
+                """)
+                conn.commit()
+    except Exception as e:
+        st.warning(f"Advertencia al crear tabla de notificaciones: {e}")
+    
+    # Tabs para diferentes tipos de notificaciones
+    tab1, tab2, tab3 = st.tabs(["📥 Mis Notificaciones", "⚠️ Alertas del Sistema", "🔔 Configuración"])
+    
+    with tab1:
+        st.subheader("Notificaciones Personales")
+        
+        try:
+            user_id = st.session_state.get('user_data', {}).get('id')
+            
+            notificaciones = run_query("""
+                SELECT * FROM notificaciones 
+                WHERE usuario_id = %s OR usuario_id IS NULL
+                ORDER BY fecha_creacion DESC
+                LIMIT 50
+            """, (user_id,))
+            
+            if not notificaciones.empty:
+                for idx, notif in notificaciones.iterrows():
+                    # Icono según tipo
+                    icon = {"info": "ℹ️", "warning": "⚠️", "error": "❌", "success": "✅"}.get(notif['tipo'], "📝")
+                    leida_icon = "👁️" if notif['leida'] else "🔵"
+                    
+                    with st.expander(f"{icon} {leida_icon} {notif['titulo']} - {notif['fecha_creacion'].strftime('%d/%m/%Y %H:%M')}"):
+                        st.write(notif['mensaje'])
+                        
+                        col1, col2 = st.columns([1, 1])
+                        with col1:
+                            if not notif['leida']:
+                                if st.button("✅ Marcar como leída", key=f"read_{notif['id_notificacion']}"):
+                                    try:
+                                        conn = init_db_connection()
+                                        if conn:
+                                            with conn.cursor() as cur:
+                                                cur.execute("UPDATE notificaciones SET leida = TRUE WHERE id_notificacion = %s", 
+                                                          (notif['id_notificacion'],))
+                                                conn.commit()
+                                                st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Error al actualizar notificación: {e}")
+                        
+                        with col2:
+                            if st.button("🗑️ Eliminar", key=f"del_{notif['id_notificacion']}"):
+                                try:
+                                    conn = init_db_connection()
+                                    if conn:
+                                        with conn.cursor() as cur:
+                                            cur.execute("DELETE FROM notificaciones WHERE id_notificacion = %s", 
+                                                      (notif['id_notificacion'],))
+                                            conn.commit()
+                                            st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error al eliminar notificación: {e}")
+            else:
+                st.info("No tienes notificaciones pendientes")
+                
+        except Exception as e:
+            st.error(f"Error al cargar notificaciones: {e}")
+    
+    with tab2:
+        st.subheader("Alertas Automáticas del Sistema")
+        
+        # Alertas de casos próximos a vencer
+        st.markdown("**🚨 Casos que requieren atención:**")
+        
+        try:
+            # Casos sin actividad reciente
+            casos_inactivos = run_query("""
+                SELECT c.titulo, c.estado, c.fecha_apertura,
+                       cl.nombre || ' ' || cl.apellido as cliente,
+                       a.nombre || ' ' || a.apellido as abogado
+                FROM casos c
+                JOIN clientes cl ON c.id_cliente = cl.id_cliente
+                JOIN abogados a ON c.id_abogado = a.id_abogado
+                WHERE c.estado IN ('Abierto', 'En Progreso')
+                AND c.fecha_apertura < CURRENT_DATE - INTERVAL '30 days'
+                ORDER BY c.fecha_apertura
+            """)
+            
+            if not casos_inactivos.empty:
+                st.warning(f"⚠️ {len(casos_inactivos)} casos sin actividad reciente (más de 30 días)")
+                st.dataframe(casos_inactivos, use_container_width=True)
+            else:
+                st.success("✅ Todos los casos están al día")
+                
+            # Eventos próximos
+            eventos_proximos = run_query("""
+                SELECT titulo, fecha_evento, hora_inicio, tipo_evento
+                FROM eventos 
+                WHERE fecha_evento BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'
+                AND estado = 'programado'
+                ORDER BY fecha_evento, hora_inicio
+            """)
+            
+            if not eventos_proximos.empty:
+                st.info(f"📅 {len(eventos_proximos)} eventos próximos (próximos 7 días)")
+                st.dataframe(eventos_proximos, use_container_width=True)
+                
+        except Exception as e:
+            st.error(f"Error al cargar alertas: {e}")
+    
+    with tab3:
+        st.subheader("Configuración de Notificaciones")
+        
+        st.markdown("**🔔 Preferencias de Notificaciones**")
+        
+        # Simulación de configuraciones (se pueden guardar en la BD)
+        notif_casos_nuevos = st.checkbox("Notificar cuando se creen nuevos casos", value=True)
+        notif_documentos = st.checkbox("Notificar cuando se suban nuevos documentos", value=True)
+        notif_eventos = st.checkbox("Recordatorios de eventos (24h antes)", value=True)
+        notif_casos_inactivos = st.checkbox("Alertas de casos inactivos (30+ días)", value=True)
+        
+        if st.button("💾 Guardar Configuración"):
+            st.success("✅ Configuración guardada exitosamente!")
+
+# --- Página de Tareas y Workflow ---
+elif page == "📋 Tareas y Workflow":
+    st.header("📋 Tareas y Workflow")
+    require_permission("tareas")
+    
+    st.subheader("✅ Gestión de Tareas y Flujos de Trabajo")
+    
+    # Crear tabla de tareas si no existe
+    try:
+        conn = init_db_connection()
+        if conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS tareas (
+                        id_tarea SERIAL PRIMARY KEY,
+                        titulo VARCHAR(200) NOT NULL,
+                        descripcion TEXT,
+                        prioridad VARCHAR(20) DEFAULT 'media',
+                        estado VARCHAR(50) DEFAULT 'pendiente',
+                        fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        fecha_vencimiento DATE,
+                        id_caso INTEGER REFERENCES casos(id_caso),
+                        id_abogado INTEGER REFERENCES abogados(id_abogado),
+                        creado_por UUID,
+                        asignado_a UUID,
+                        tiempo_estimado INTEGER, -- en horas
+                        tiempo_real INTEGER -- en horas
+                    );
+                """)
+                conn.commit()
+    except Exception as e:
+        st.warning(f"Advertencia al crear tabla de tareas: {e}")
+    
+    # Tabs para diferentes vistas
+    tab1, tab2, tab3, tab4 = st.tabs(["📋 Mis Tareas", "➕ Nueva Tarea", "📊 Dashboard de Tareas", "⚡ Workflows"])
+    
+    with tab1:
+        st.subheader("Mis Tareas Asignadas")
+        
+        user_id = st.session_state.get('user_data', {}).get('id')
+        
+        # Filtros
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            filtro_estado = st.selectbox("Estado", ["Todas", "pendiente", "en_progreso", "completada", "cancelada"])
+        with col2:
+            filtro_prioridad = st.selectbox("Prioridad", ["Todas", "alta", "media", "baja"])
+        with col3:
+            solo_vencidas = st.checkbox("Solo tareas vencidas")
+        
+        try:
+            query = """
+                SELECT t.*, c.titulo as caso_titulo, a.nombre || ' ' || a.apellido as abogado_nombre
+                FROM tareas t
+                LEFT JOIN casos c ON t.id_caso = c.id_caso
+                LEFT JOIN abogados a ON t.id_abogado = a.id_abogado
+                WHERE t.asignado_a = %s OR t.creado_por = %s
+            """
+            params = [user_id, user_id]
+            
+            if filtro_estado != "Todas":
+                query += " AND t.estado = %s"
+                params.append(filtro_estado)
+                
+            if filtro_prioridad != "Todas":
+                query += " AND t.prioridad = %s"
+                params.append(filtro_prioridad)
+                
+            if solo_vencidas:
+                query += " AND t.fecha_vencimiento < CURRENT_DATE AND t.estado != 'completada'"
+            
+            query += " ORDER BY t.fecha_vencimiento, t.prioridad DESC"
+            
+            tareas = run_query(query, params)
+            
+            if not tareas.empty:
+                for idx, tarea in tareas.iterrows():
+                    # Colores según prioridad y estado
+                    prioridad_color = {"alta": "🔴", "media": "🟡", "baja": "🟢"}.get(tarea['prioridad'], "⚪")
+                    estado_icon = {"pendiente": "⏳", "en_progreso": "🔄", "completada": "✅", "cancelada": "❌"}.get(tarea['estado'], "📝")
+                    
+                    # Verificar si está vencida
+                    vencida = ""
+                    if tarea['fecha_vencimiento'] and tarea['fecha_vencimiento'] < datetime.now().date() and tarea['estado'] != 'completada':
+                        vencida = "🚨 VENCIDA - "
+                    
+                    with st.expander(f"{prioridad_color} {estado_icon} {vencida}{tarea['titulo']} - Vence: {tarea['fecha_vencimiento']}"):
+                        col1, col2 = st.columns([2, 1])
+                        
+                        with col1:
+                            st.write(f"**Descripción:** {tarea['descripcion']}")
+                            if tarea['caso_titulo']:
+                                st.write(f"**Caso:** {tarea['caso_titulo']}")
+                            if tarea['abogado_nombre']:
+                                st.write(f"**Abogado:** {tarea['abogado_nombre']}")
+                            
+                        with col2:
+                            nuevo_estado = st.selectbox("Cambiar Estado", 
+                                ["pendiente", "en_progreso", "completada", "cancelada"],
+                                index=["pendiente", "en_progreso", "completada", "cancelada"].index(tarea['estado']),
+                                key=f"estado_{tarea['id_tarea']}")
+                            
+                            if st.button("💾 Actualizar", key=f"update_{tarea['id_tarea']}"):
+                                try:
+                                    conn = init_db_connection()
+                                    if conn:
+                                        with conn.cursor() as cur:
+                                            cur.execute("UPDATE tareas SET estado = %s WHERE id_tarea = %s", 
+                                                      (nuevo_estado, tarea['id_tarea']))
+                                            conn.commit()
+                                            st.success("✅ Tarea actualizada!")
+                                            st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error al actualizar tarea: {e}")
+                                    
+            else:
+                st.info("No tienes tareas asignadas")
+                
+        except Exception as e:
+            st.error(f"Error al cargar tareas: {e}")
+    
+    with tab2:
+        st.subheader("Crear Nueva Tarea")
+        
+        with st.form("nueva_tarea_form"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                titulo_tarea = st.text_input("Título de la Tarea")
+                descripcion_tarea = st.text_area("Descripción Detallada")
+                prioridad = st.selectbox("Prioridad", ["baja", "media", "alta"])
+                fecha_vencimiento = st.date_input("Fecha de Vencimiento")
+                
+            with col2:
+                tiempo_estimado = st.number_input("Tiempo Estimado (horas)", min_value=0.5, max_value=100.0, value=1.0, step=0.5)
+                
+                # Asignar a abogado (si tienes permisos)
+                abogados = get_lawyers()
+                abogado_asignado = None
+                if not abogados.empty and has_permission("gestionar_usuarios"):
+                    abogado_opciones = ["Auto-asignada"] + abogados['nombre_completo'].tolist()
+                    abogado_idx = st.selectbox("Asignar a Abogado", range(len(abogado_opciones)),
+                        format_func=lambda x: abogado_opciones[x])
+                    if abogado_idx > 0:
+                        abogado_asignado = abogados.iloc[abogado_idx-1]['id_abogado']
+                
+                # Caso relacionado
+                casos = get_cases_detailed()
+                caso_relacionado = None
+                if not casos.empty:
+                    caso_opciones = ["Ninguno"] + casos['titulo'].tolist()
+                    caso_idx = st.selectbox("Caso Relacionado", range(len(caso_opciones)),
+                        format_func=lambda x: caso_opciones[x])
+                    if caso_idx > 0:
+                        caso_relacionado = casos.iloc[caso_idx-1]['id_caso']
+            
+            if st.form_submit_button("📋 Crear Tarea", use_container_width=True):
+                if titulo_tarea and fecha_vencimiento:
+                    try:
+                        user_id = st.session_state.get('user_data', {}).get('id')
+                        asignado_a = user_id if not abogado_asignado else abogado_asignado
+                        
+                        conn = init_db_connection()
+                        if conn:
+                            with conn.cursor() as cur:
+                                cur.execute("""
+                                    INSERT INTO tareas (titulo, descripcion, prioridad, fecha_vencimiento, 
+                                                      id_caso, id_abogado, creado_por, asignado_a, tiempo_estimado)
+                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                """, (titulo_tarea, descripcion_tarea, prioridad, fecha_vencimiento,
+                                     caso_relacionado, abogado_asignado, user_id, asignado_a, tiempo_estimado))
+                                conn.commit()
+                                st.success("✅ Tarea creada exitosamente!")
+                                st.rerun()
+                    except Exception as e:
+                        st.error(f"Error al crear tarea: {e}")
+                else:
+                    st.error("El título y la fecha de vencimiento son obligatorios")
+    
+    with tab3:
+        st.subheader("Dashboard de Tareas")
+        
+        # Métricas de tareas
+        col1, col2, col3, col4 = st.columns(4)
+        
+        try:
+            total_tareas = run_query("SELECT COUNT(*) as total FROM tareas").iloc[0]['total']
+            col1.metric("📋 Total de Tareas", total_tareas)
+            
+            tareas_pendientes = run_query("SELECT COUNT(*) as pendientes FROM tareas WHERE estado = 'pendiente'").iloc[0]['pendientes']
+            col2.metric("⏳ Pendientes", tareas_pendientes)
+            
+            tareas_progreso = run_query("SELECT COUNT(*) as progreso FROM tareas WHERE estado = 'en_progreso'").iloc[0]['progreso']
+            col3.metric("🔄 En Progreso", tareas_progreso)
+            
+            tareas_vencidas = run_query("""
+                SELECT COUNT(*) as vencidas FROM tareas 
+                WHERE fecha_vencimiento < CURRENT_DATE AND estado != 'completada'
+            """).iloc[0]['vencidas']
+            col4.metric("🚨 Vencidas", tareas_vencidas, delta_color="inverse")
+            
+        except Exception as e:
+            st.error(f"Error al cargar métricas de tareas: {e}")
+        
+        # Gráfico de distribución de tareas
+        try:
+            distribucion = run_query("""
+                SELECT estado, COUNT(*) as cantidad
+                FROM tareas
+                GROUP BY estado
+                ORDER BY cantidad DESC
+            """)
+            
+            if not distribucion.empty:
+                st.subheader("📊 Distribución de Tareas por Estado")
+                st.bar_chart(distribucion.set_index('estado'))
+                
+        except Exception as e:
+            st.error(f"Error al cargar distribución: {e}")
+    
+    with tab4:
+        st.subheader("Workflows Automatizados")
+        
+        st.info("🚧 Esta sección está en desarrollo")
+        
+        st.markdown("""
+        **Workflows planificados:**
+        
+        - 🔄 **Workflow de Nuevo Caso**: Crear tareas automáticas al crear un caso
+        - 📄 **Workflow de Documentos**: Asignar revisión automática de documentos
+        - ⏰ **Workflow de Recordatorios**: Crear tareas de seguimiento automáticamente
+        - 📊 **Workflow de Reportes**: Generar reportes periódicos automáticamente
+        """)
+
+# --- Página de Gestión de Usuarios (Solo Administradores) ---
+elif page == "🔧 Gestión de Usuarios":
+    st.header("🔧 Gestión de Usuarios")
+    require_permission("gestionar_roles")
+    
+    st.subheader("👥 Administración de Usuarios y Roles")
+    
+    # Verificar conexión antes de continuar
+    if not test_database_connection():
+        st.stop()
+    
+    tab1, tab2 = st.tabs(["👥 Lista de Usuarios", "➕ Crear Usuario"])
+    
+    with tab1:
+        st.subheader("Usuarios Registrados")
+        
+        try:
+            usuarios = run_query("""
+                SELECT p.id, p.nombre_completo, p.rol, 
+                       COUNT(c.id_caso) as casos_asignados
+                FROM perfiles p
+                LEFT JOIN abogados a ON LOWER(p.nombre_completo) = LOWER(a.nombre || ' ' || a.apellido)
+                LEFT JOIN casos c ON a.id_abogado = c.id_abogado
+                GROUP BY p.id, p.nombre_completo, p.rol
+                ORDER BY p.nombre_completo
+            """)
+            
+            if not usuarios.empty:
+                for idx, usuario in usuarios.iterrows():
+                    with st.expander(f"{get_role_display_name(usuario['rol'])} - {usuario['nombre_completo']}"):
+                        col1, col2 = st.columns([2, 1])
+                        
+                        with col1:
+                            st.write(f"**ID:** {usuario['id']}")
+                            st.write(f"**Casos Asignados:** {usuario['casos_asignados']}")
+                            
+                            # Cambiar rol
+                            nuevo_rol = st.selectbox(
+                                "Cambiar Rol",
+                                get_available_roles(),
+                                index=get_available_roles().index(usuario['rol']) if usuario['rol'] in get_available_roles() else 0,
+                                key=f"rol_{usuario['id']}"
+                            )
+                            
+                        with col2:
+                            if st.button("💾 Actualizar Rol", key=f"update_rol_{usuario['id']}"):
+                                try:
+                                    conn = init_db_connection()
+                                    if conn:
+                                        with conn.cursor() as cur:
+                                            cur.execute("UPDATE perfiles SET rol = %s WHERE id = %s", 
+                                                      (nuevo_rol, usuario['id']))
+                                            conn.commit()
+                                            st.success(f"✅ Rol actualizado a {get_role_display_name(nuevo_rol)}")
+                                            st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error al actualizar rol: {e}")
+                            
+                            if st.button("🗑️ Eliminar Usuario", key=f"delete_{usuario['id']}", type="secondary"):
+                                st.warning("⚠️ Esta acción eliminará permanentemente al usuario")
+                                
+            else:
+                st.info("No hay usuarios registrados")
+                
+        except Exception as e:
+            st.error(f"Error al cargar usuarios: {e}")
+    
+    with tab2:
+        st.subheader("Registro de Usuario por Administrador")
+        st.info("💡 Como administrador, puedes crear usuarios con cualquier rol")
+        
+        # Aquí se mostrará el formulario de registro con todas las opciones de rol
