@@ -331,6 +331,134 @@ def login_user(email: str, password: str) -> dict:
         st.error(f"Error al iniciar sesión: {e}")
         return None
 
+def refresh_user_data():
+    """Refresca los datos del usuario desde la base de datos"""
+    try:
+        if not st.session_state.get('authenticated', False):
+            return False
+            
+        user_data = st.session_state.get('user_data', {})
+        user_id = user_data.get('id')
+        
+        if not user_id:
+            return False
+            
+        # Obtener datos actualizados del perfil
+        conn = init_db_connection()
+        if conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT nombre_completo, rol FROM perfiles WHERE id = %s", (user_id,))
+                perfil = cur.fetchone()
+                
+                if perfil:
+                    # Actualizar session state con datos frescos
+                    st.session_state.user_data.update({
+                        'nombre_completo': perfil[0],
+                        'rol': perfil[1]
+                    })
+                    return True
+        return False
+        
+    except Exception as e:
+        st.error(f"Error al refrescar datos del usuario: {e}")
+        return False
+
+def migrar_clientes_a_perfiles():
+    """Migra datos de la tabla clientes a perfiles con rol cliente"""
+    try:
+        conn = init_db_connection()
+        if conn:
+            with conn.cursor() as cur:
+                # Obtener clientes que no tienen perfil
+                cur.execute("""
+                    SELECT c.id_cliente, c.nombre, c.apellido, c.email 
+                    FROM clientes c 
+                    WHERE c.email IS NOT NULL 
+                    LIMIT 20
+                """)
+                clientes = cur.fetchall()
+                
+                migrados = 0
+                errores = 0
+                for cliente in clientes:
+                    try:
+                        # Verificar si ya existe un perfil con este email
+                        cur.execute("SELECT id FROM perfiles WHERE nombre_completo ILIKE %s", (f"%{cliente[3]}%",))
+                        if cur.fetchone():
+                            continue  # Ya existe
+                        
+                        # Generar nombre completo
+                        nombre_completo = f"{cliente[1]} {cliente[2]}" if cliente[1] and cliente[2] else cliente[3]
+                        
+                        # Insertar en perfiles (sin ID de auth por ahora)
+                        cur.execute("""
+                            INSERT INTO perfiles (id, nombre_completo, rol) 
+                            VALUES (gen_random_uuid()::text, %s, 'cliente')
+                        """, (nombre_completo,))
+                        migrados += 1
+                    except Exception as e:
+                        errores += 1
+                        continue
+                
+                conn.commit()
+                st.success(f"✅ Se migraron {migrados} clientes a perfiles")
+                if errores > 0:
+                    st.warning(f"⚠️ {errores} clientes no se pudieron migrar")
+                if migrados > 0:
+                    st.info("💡 Los clientes migrados necesitarán registrarse para obtener credenciales de acceso")
+                
+    except Exception as e:
+        st.error(f"Error en migración de clientes: {e}")
+
+def migrar_abogados_a_perfiles():
+    """Migra datos de la tabla abogados a perfiles con rol abogado_junior"""
+    try:
+        conn = init_db_connection()
+        if conn:
+            with conn.cursor() as cur:
+                # Obtener abogados que no tienen perfil
+                cur.execute("""
+                    SELECT a.id_abogado, a.nombre, a.apellido, a.email, a.especialidad 
+                    FROM abogados a 
+                    WHERE a.email IS NOT NULL 
+                    LIMIT 20
+                """)
+                abogados = cur.fetchall()
+                
+                migrados = 0
+                errores = 0
+                for abogado in abogados:
+                    try:
+                        # Verificar si ya existe un perfil con este email
+                        cur.execute("SELECT id FROM perfiles WHERE nombre_completo ILIKE %s", (f"%{abogado[3]}%",))
+                        if cur.fetchone():
+                            continue  # Ya existe
+                        
+                        # Generar nombre completo
+                        nombre_completo = f"{abogado[1]} {abogado[2]}" if abogado[1] and abogado[2] else abogado[3]
+                        if abogado[4]:  # especialidad
+                            nombre_completo += f" - {abogado[4]}"
+                        
+                        # Insertar en perfiles
+                        cur.execute("""
+                            INSERT INTO perfiles (id, nombre_completo, rol) 
+                            VALUES (gen_random_uuid()::text, %s, 'abogado_junior')
+                        """, (nombre_completo,))
+                        migrados += 1
+                    except Exception as e:
+                        errores += 1
+                        continue
+                
+                conn.commit()
+                st.success(f"✅ Se migraron {migrados} abogados a perfiles")
+                if errores > 0:
+                    st.warning(f"⚠️ {errores} abogados no se pudieron migrar")
+                if migrados > 0:
+                    st.info("💡 Los abogados migrados necesitarán registrarse para obtener credenciales de acceso")
+                
+    except Exception as e:
+        st.error(f"Error en migración de abogados: {e}")
+
 def logout_user():
     """Cierra sesión del usuario"""
     try:
@@ -1560,31 +1688,37 @@ elif page == "👤 Mi Perfil":
                         if st.button("🔄 Recrear Perfil Automáticamente", use_container_width=True):
                             try:
                                 # Verificar que tenemos un user_id válido
-                                if not user_id:
+                                if not user_id or user_id == "":
                                     st.error("❌ No se puede recrear el perfil: user_id es inválido")
                                     st.json({"user_data": dict(user_data) if user_data else None})
                                     st.stop()
                                 
                                 # Primero verificar si ya existe
-                                cur.execute("SELECT id FROM perfiles WHERE id = %s", (user_id,))
+                                cur.execute("SELECT id, rol FROM perfiles WHERE id = %s", (user_id,))
                                 exists = cur.fetchone()
                                 
                                 if exists:
                                     st.warning("⚠️ El perfil ya existe, actualizando...")
+                                    # Mantener el rol existente si es administrador
+                                    rol_actual = exists[1] if exists[1] in ['administrador', 'socio', 'abogado_senior', 'abogado_junior'] else 'cliente'
                                     update_query = "UPDATE perfiles SET nombre_completo = %s, rol = %s WHERE id = %s"
-                                    cur.execute(update_query, (user_data.get('nombre_completo', user_data.get('email', 'Usuario')), 'cliente', user_id))
+                                    cur.execute(update_query, (user_data.get('nombre_completo', user_data.get('email', 'Usuario')), rol_actual, user_id))
+                                    rol_asignado = rol_actual
                                 else:
                                     # Crear nuevo perfil
                                     insert_query = "INSERT INTO perfiles (id, nombre_completo, rol) VALUES (%s, %s, %s)"
                                     nombre_para_perfil = user_data.get('nombre_completo') or user_data.get('email', 'Usuario')
-                                    cur.execute(insert_query, (user_id, nombre_para_perfil, 'cliente'))
+                                    # Dar rol admin a usuarios bootstrap
+                                    user_email = user_data.get('email', '').lower()
+                                    rol_asignado = 'administrador' if user_email in ['noe@gmail.com', 'noelia.cq28@gmail.com'] else 'cliente'
+                                    cur.execute(insert_query, (user_id, nombre_para_perfil, rol_asignado))
                                 
                                 conn.commit()
                                 
-                                # Actualizar datos en session state
-                                st.session_state.user_data['rol'] = 'cliente'
+                                # Refrescar datos del usuario en session state
+                                refresh_user_data()
                                 
-                                st.success("✅ Perfil recreado/actualizado exitosamente!")
+                                st.success(f"✅ Perfil recreado/actualizado exitosamente! Rol asignado: {rol_asignado}")
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"❌ Error al recrear perfil: {e}")
@@ -2308,6 +2442,12 @@ elif page == "🔧 Gestión de Usuarios":
                                             cur.execute("UPDATE perfiles SET rol = %s WHERE id = %s", 
                                                       (nuevo_rol, usuario['id']))
                                             conn.commit()
+                                            
+                                            # Si el usuario actualizado es el usuario actual, refrescar session state
+                                            current_user_id = st.session_state.get('user_data', {}).get('id')
+                                            if current_user_id == usuario['id']:
+                                                refresh_user_data()
+                                            
                                             st.success(f"✅ Rol actualizado a {get_role_display_name(nuevo_rol)}")
                                             st.rerun()
                                 except Exception as e:
@@ -2413,3 +2553,41 @@ elif page == "🔧 Gestión de Usuarios":
                         st.rerun()
             except Exception as e:
                 st.error(f"Error al normalizar roles: {e}")
+        
+        # Herramientas para migrar datos de tablas existentes
+        st.markdown("---")
+        st.markdown("**📊 Migración de Datos Existentes**")
+        
+        col_migrar1, col_migrar2 = st.columns(2)
+        
+        with col_migrar1:
+            st.markdown("**👥 Tabla Clientes**")
+            try:
+                clientes_data = run_query("SELECT * FROM clientes LIMIT 5")
+                if not clientes_data.empty:
+                    st.dataframe(clientes_data, use_container_width=True)
+                    total_clientes = run_query("SELECT COUNT(*) as total FROM clientes").iloc[0]['total']
+                    st.info(f"Total de clientes: {total_clientes}")
+                    
+                    if st.button("🔄 Crear Perfiles desde Clientes", type="secondary"):
+                        migrar_clientes_a_perfiles()
+                else:
+                    st.info("No hay datos en la tabla clientes")
+            except Exception as e:
+                st.warning(f"Error al acceder tabla clientes: {e}")
+        
+        with col_migrar2:
+            st.markdown("**⚖️ Tabla Abogados**")
+            try:
+                abogados_data = run_query("SELECT * FROM abogados LIMIT 5")
+                if not abogados_data.empty:
+                    st.dataframe(abogados_data, use_container_width=True)
+                    total_abogados = run_query("SELECT COUNT(*) as total FROM abogados").iloc[0]['total']
+                    st.info(f"Total de abogados: {total_abogados}")
+                    
+                    if st.button("🔄 Crear Perfiles desde Abogados", type="secondary"):
+                        migrar_abogados_a_perfiles()
+                else:
+                    st.info("No hay datos en la tabla abogados")
+            except Exception as e:
+                st.warning(f"Error al acceder tabla abogados: {e}")
