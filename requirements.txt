@@ -3,3 +3,7 @@ pandas
 psycopg2-binary
 google-generativeai
 supabase
+st-supabase-connection
+streamlit-authenticator
+bcrypt
+PyJWT

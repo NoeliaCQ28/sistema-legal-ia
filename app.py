@@ -6,6 +6,10 @@ from supabase import create_client, Client
 import io
 import re
 import uuid
+import bcrypt
+import jwt
+from datetime import datetime, timedelta
+from st_supabase_connection import SupabaseConnection
 
 # --- Configuración de la Página ---
 st.set_page_config(
@@ -46,6 +50,224 @@ def init_supabase_client():
     except Exception as e:
         st.error(f"Error al conectar con Supabase: {e}")
         return None
+
+# --- Conexión a Supabase para Autenticación ---
+@st.cache_resource
+def init_supabase_auth_connection():
+    """Inicializa la conexión a Supabase para autenticación usando st.connection"""
+    try:
+        return st.connection("supabase", type=SupabaseConnection)
+    except Exception as e:
+        st.error(f"Error al conectar con Supabase para autenticación: {e}")
+        return None
+
+# --- Funciones de Autenticación ---
+def hash_password(password: str) -> str:
+    """Genera hash de contraseña usando bcrypt"""
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+def verify_password(password: str, hashed: str) -> bool:
+    """Verifica contraseña contra hash"""
+    return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
+
+def create_jwt_token(user_id: str, email: str) -> str:
+    """Crea JWT token para el usuario"""
+    payload = {
+        'user_id': user_id,
+        'email': email,
+        'exp': datetime.utcnow() + timedelta(hours=24)
+    }
+    # Usar una clave secreta simple para JWT (en producción usar st.secrets)
+    secret_key = "legalai_secret_key_2024"
+    return jwt.encode(payload, secret_key, algorithm='HS256')
+
+def verify_jwt_token(token: str) -> dict:
+    """Verifica y decodifica JWT token"""
+    try:
+        secret_key = "legalai_secret_key_2024"
+        payload = jwt.decode(token, secret_key, algorithms=['HS256'])
+        return payload
+    except jwt.ExpiredSignatureError:
+        return None
+    except jwt.InvalidTokenError:
+        return None
+
+def register_user(email: str, password: str, nombre_completo: str) -> bool:
+    """Registra un nuevo usuario en Supabase Auth y en la tabla perfiles"""
+    try:
+        supabase_conn = init_supabase_auth_connection()
+        if not supabase_conn:
+            return False
+        
+        # Registrar en Supabase Auth
+        auth_response = supabase_conn.client.auth.sign_up({
+            "email": email,
+            "password": password
+        })
+        
+        if auth_response.user:
+            user_id = auth_response.user.id
+            
+            # Crear perfil en nuestra tabla
+            profile_data = {
+                "id": user_id,
+                "nombre_completo": nombre_completo,
+                "rol": "usuario"
+            }
+            
+            supabase_conn.client.table("perfiles").insert(profile_data).execute()
+            
+            return True
+        return False
+        
+    except Exception as e:
+        st.error(f"Error al registrar usuario: {e}")
+        return False
+
+def login_user(email: str, password: str) -> dict:
+    """Autentica usuario con Supabase Auth"""
+    try:
+        supabase_conn = init_supabase_auth_connection()
+        if not supabase_conn:
+            return None
+        
+        # Intentar login con Supabase Auth
+        auth_response = supabase_conn.client.auth.sign_in_with_password({
+            "email": email,
+            "password": password
+        })
+        
+        if auth_response.user:
+            user_id = auth_response.user.id
+            
+            # Obtener perfil del usuario
+            profile_response = supabase_conn.client.table("perfiles").select("*").eq("id", user_id).execute()
+            
+            if profile_response.data:
+                profile = profile_response.data[0]
+                return {
+                    "id": user_id,
+                    "email": email,
+                    "nombre_completo": profile.get("nombre_completo", ""),
+                    "rol": profile.get("rol", "usuario"),
+                    "token": create_jwt_token(user_id, email)
+                }
+        return None
+        
+    except Exception as e:
+        st.error(f"Error al iniciar sesión: {e}")
+        return None
+
+def logout_user():
+    """Cierra sesión del usuario"""
+    try:
+        supabase_conn = init_supabase_auth_connection()
+        if supabase_conn:
+            supabase_conn.client.auth.sign_out()
+    except:
+        pass
+    
+    # Limpiar session state
+    for key in list(st.session_state.keys()):
+        if key.startswith('auth_'):
+            del st.session_state[key]
+    
+    st.session_state.authenticated = False
+    st.session_state.user_data = None
+
+def check_authentication() -> bool:
+    """Verifica si el usuario está autenticado"""
+    if not st.session_state.get('authenticated', False):
+        return False
+    
+    # Verificar token si existe
+    if 'auth_token' in st.session_state:
+        user_data = verify_jwt_token(st.session_state.auth_token)
+        if user_data is None:
+            logout_user()
+            return False
+        
+        # Actualizar datos del usuario en session state
+        st.session_state.user_data = user_data
+    
+    return st.session_state.get('authenticated', False)
+
+def require_authentication():
+    """Decorator/helper para requerir autenticación"""
+    if not check_authentication():
+        show_login_page()
+        st.stop()
+
+def show_login_page():
+    """Muestra la página de login/registro"""
+    st.markdown("<h1 style='text-align: center; color: #4A4A4A;'>⚖️ LegalIA - Acceso al Sistema</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center;'>Inicie sesión para acceder al sistema de gestión de casos legales</p>", unsafe_allow_html=True)
+    st.markdown("---")
+    
+    # Tabs para Login y Registro
+    tab1, tab2 = st.tabs(["🔐 Iniciar Sesión", "📝 Registrarse"])
+    
+    with tab1:
+        st.subheader("Iniciar Sesión")
+        with st.form("login_form"):
+            email = st.text_input("Email", key="login_email")
+            password = st.text_input("Contraseña", type="password", key="login_password")
+            
+            if st.form_submit_button("Iniciar Sesión", use_container_width=True):
+                if email and password:
+                    with st.spinner("Verificando credenciales..."):
+                        user_data = login_user(email, password)
+                        
+                        if user_data:
+                            # Guardar datos en session state
+                            st.session_state.authenticated = True
+                            st.session_state.user_data = user_data
+                            st.session_state.auth_token = user_data['token']
+                            
+                            st.success(f"¡Bienvenido, {user_data['nombre_completo']}!")
+                            st.rerun()
+                        else:
+                            st.error("Email o contraseña incorrectos")
+                else:
+                    st.error("Por favor, complete todos los campos")
+    
+    with tab2:
+        st.subheader("Crear Cuenta Nueva")
+        with st.form("register_form"):
+            reg_nombre = st.text_input("Nombre Completo", key="reg_nombre")
+            reg_email = st.text_input("Email", key="reg_email")
+            reg_password = st.text_input("Contraseña", type="password", key="reg_password")
+            reg_confirm_password = st.text_input("Confirmar Contraseña", type="password", key="reg_confirm")
+            
+            if st.form_submit_button("Registrarse", use_container_width=True):
+                if all([reg_nombre, reg_email, reg_password, reg_confirm_password]):
+                    if reg_password != reg_confirm_password:
+                        st.error("Las contraseñas no coinciden")
+                    elif len(reg_password) < 6:
+                        st.error("La contraseña debe tener al menos 6 caracteres")
+                    else:
+                        with st.spinner("Creando cuenta..."):
+                            if register_user(reg_email, reg_password, reg_nombre):
+                                st.success("¡Cuenta creada exitosamente! Revise su email para confirmar y luego inicie sesión.")
+                            else:
+                                st.error("Error al crear la cuenta. El email podría estar ya registrado.")
+                else:
+                    st.error("Por favor, complete todos los campos")
+
+def show_user_info():
+    """Muestra información del usuario en la sidebar"""
+    if check_authentication() and st.session_state.get('user_data'):
+        user_data = st.session_state.user_data
+        
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("**👤 Usuario Actual**")
+        st.sidebar.markdown(f"**{user_data.get('nombre_completo', 'Usuario')}**")
+        st.sidebar.markdown(f"*{user_data.get('email', '')}*")
+        st.sidebar.markdown(f"Rol: {user_data.get('rol', 'usuario')}")
+        
+        if st.sidebar.button("🚪 Cerrar Sesión", use_container_width=True):
+            logout_user()
+            st.rerun()
 
 # --- Configuración del Modelo de IA de Google ---
 try:
@@ -510,9 +732,17 @@ def create_document_fallback(nombre_archivo, descripcion, id_caso, ruta_storage)
 
 # --- Interfaz de Usuario (Frontend) ---
 
+# Verificar autenticación antes de mostrar cualquier contenido
+if not check_authentication():
+    show_login_page()
+    st.stop()
+
+# Mostrar información del usuario en la sidebar
+show_user_info()
+
 st.sidebar.title("Menú de Navegación")
 st.sidebar.markdown("Seleccione un Módulo")
-page = st.sidebar.radio("Módulos", ["Dashboard", "Crear Nuevo Caso", "Gestión Documental", "Gestionar Clientes y Abogados"], label_visibility="hidden")
+page = st.sidebar.radio("Módulos", ["Dashboard", "Crear Nuevo Caso", "Gestión Documental", "Gestionar Clientes y Abogados", "Mi Perfil"], label_visibility="hidden")
 
 st.sidebar.markdown("---")
 
@@ -901,3 +1131,140 @@ elif page == "Gestionar Clientes y Abogados":
         st.subheader("Lista de Abogados")
         abogados_df = run_query("SELECT nombre, apellido, especialidad, email, telefono FROM abogados ORDER BY nombre, apellido;")
         st.dataframe(abogados_df, use_container_width=True)
+
+# --- Página de Gestión de Perfil ---
+elif page == "Mi Perfil":
+    st.header("👤 Mi Perfil")
+    
+    if not check_authentication():
+        st.error("Debe estar autenticado para ver esta página")
+        st.stop()
+    
+    user_data = st.session_state.get('user_data', {})
+    user_id = user_data.get('id')
+    
+    # Obtener datos actuales del perfil
+    try:
+        conn = init_db_connection()
+        if conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM perfiles WHERE id = %s", (user_id,))
+                perfil_actual = cur.fetchone()
+                
+                if perfil_actual:
+                    # Mostrar información actual
+                    st.subheader("📋 Información Actual")
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.info(f"**Email:** {user_data.get('email', 'N/A')}")
+                        st.info(f"**Nombre:** {perfil_actual[1] if len(perfil_actual) > 1 else 'N/A'}")
+                    
+                    with col2:
+                        st.info(f"**Rol:** {perfil_actual[2] if len(perfil_actual) > 2 else 'N/A'}")
+                        st.info(f"**ID de Usuario:** {user_id}")
+                    
+                    st.markdown("---")
+                    
+                    # Formulario para actualizar perfil
+                    st.subheader("✏️ Actualizar Información")
+                    with st.form("update_profile_form"):
+                        nuevo_nombre = st.text_input(
+                            "Nombre Completo", 
+                            value=perfil_actual[1] if len(perfil_actual) > 1 else "",
+                            help="Actualice su nombre completo"
+                        )
+                        
+                        # Solo mostrar cambio de rol si es admin
+                        current_rol = perfil_actual[2] if len(perfil_actual) > 2 else "usuario"
+                        if current_rol == "admin":
+                            nuevo_rol = st.selectbox(
+                                "Rol", 
+                                ["usuario", "admin"],
+                                index=0 if current_rol == "usuario" else 1,
+                                help="Solo administradores pueden cambiar roles"
+                            )
+                        else:
+                            st.info(f"**Rol actual:** {current_rol} (Solo administradores pueden cambiar roles)")
+                            nuevo_rol = current_rol
+                        
+                        if st.form_submit_button("💾 Actualizar Perfil", use_container_width=True):
+                            if nuevo_nombre.strip():
+                                try:
+                                    # Actualizar perfil en la base de datos
+                                    update_query = "UPDATE perfiles SET nombre_completo = %s, rol = %s WHERE id = %s"
+                                    cur.execute(update_query, (nuevo_nombre.strip(), nuevo_rol, user_id))
+                                    conn.commit()
+                                    
+                                    # Actualizar session state
+                                    st.session_state.user_data['nombre_completo'] = nuevo_nombre.strip()
+                                    st.session_state.user_data['rol'] = nuevo_rol
+                                    
+                                    st.success("✅ Perfil actualizado exitosamente!")
+                                    st.rerun()
+                                    
+                                except Exception as e:
+                                    st.error(f"❌ Error al actualizar perfil: {e}")
+                            else:
+                                st.error("❌ El nombre no puede estar vacío")
+                    
+                    st.markdown("---")
+                    
+                    # Sección de cambio de contraseña
+                    st.subheader("🔐 Cambiar Contraseña")
+                    with st.expander("Cambiar mi contraseña", expanded=False):
+                        with st.form("change_password_form"):
+                            nueva_password = st.text_input("Nueva Contraseña", type="password")
+                            confirmar_password = st.text_input("Confirmar Nueva Contraseña", type="password")
+                            
+                            if st.form_submit_button("🔄 Cambiar Contraseña"):
+                                if nueva_password and confirmar_password:
+                                    if nueva_password == confirmar_password:
+                                        if len(nueva_password) >= 6:
+                                            try:
+                                                supabase_conn = init_supabase_auth_connection()
+                                                if supabase_conn:
+                                                    # Actualizar contraseña en Supabase Auth
+                                                    supabase_conn.client.auth.update_user({
+                                                        "password": nueva_password
+                                                    })
+                                                    st.success("✅ Contraseña actualizada exitosamente!")
+                                                else:
+                                                    st.error("❌ No se pudo conectar al sistema de autenticación")
+                                            except Exception as e:
+                                                st.error(f"❌ Error al cambiar contraseña: {e}")
+                                        else:
+                                            st.error("❌ La contraseña debe tener al menos 6 caracteres")
+                                    else:
+                                        st.error("❌ Las contraseñas no coinciden")
+                                else:
+                                    st.error("❌ Complete todos los campos")
+                    
+                    # Información adicional
+                    st.markdown("---")
+                    st.subheader("📊 Estadísticas de Uso")
+                    
+                    # Contar casos creados por el usuario (si aplicable)
+                    try:
+                        # Esta sería una mejora futura: rastrear qué usuario crea qué casos
+                        st.info("🚧 Próximamente: Estadísticas detalladas de uso del sistema")
+                    except Exception as e:
+                        st.warning("No se pudieron cargar las estadísticas")
+                        
+                else:
+                    st.error("❌ No se encontró el perfil del usuario")
+                    if st.button("🔄 Recrear Perfil"):
+                        try:
+                            # Recrear perfil básico
+                            insert_query = "INSERT INTO perfiles (id, nombre_completo, rol) VALUES (%s, %s, %s)"
+                            cur.execute(insert_query, (user_id, user_data.get('email', 'Usuario'), 'usuario'))
+                            conn.commit()
+                            st.success("✅ Perfil recreado exitosamente!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Error al recrear perfil: {e}")
+    
+    except Exception as e:
+        st.error(f"❌ Error al cargar perfil: {e}")
+        if not test_database_connection():
+            st.stop()
