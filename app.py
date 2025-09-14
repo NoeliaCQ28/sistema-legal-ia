@@ -1273,15 +1273,19 @@ elif page == "Mi Perfil":
                                                     supabase_client = init_supabase_direct()
                                                     if not supabase_client:
                                                         st.error("❌ No se pudo conectar al sistema de autenticación")
-                                                        return
+                                                    else:
+                                                        # Actualizar contraseña en Supabase Auth
+                                                        supabase_client.auth.update_user({
+                                                            "password": nueva_password
+                                                        })
+                                                        st.success("✅ Contraseña actualizada exitosamente!")
                                                 else:
                                                     supabase_client = supabase_conn.client
-                                                
-                                                # Actualizar contraseña en Supabase Auth
-                                                supabase_client.auth.update_user({
-                                                    "password": nueva_password
-                                                })
-                                                st.success("✅ Contraseña actualizada exitosamente!")
+                                                    # Actualizar contraseña en Supabase Auth
+                                                    supabase_client.auth.update_user({
+                                                        "password": nueva_password
+                                                    })
+                                                    st.success("✅ Contraseña actualizada exitosamente!")
                                             except Exception as e:
                                                 st.error(f"❌ Error al cambiar contraseña: {e}")
                                         else:
