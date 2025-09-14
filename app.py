@@ -650,6 +650,72 @@ def migrar_abogados_a_perfiles():
         st.error(f"Error en migración de abogados: {e}")
         st.exception(e)
 
+def crear_tablas_faltantes(missing_tables):
+    """Crea las tablas faltantes necesarias para el sistema"""
+    try:
+        conn = init_db_connection()
+        if conn:
+            with conn.cursor() as cur:
+                
+                # Crear tabla eventos si no existe
+                if 'eventos' in missing_tables:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS eventos (
+                            id_evento SERIAL PRIMARY KEY,
+                            titulo VARCHAR(255) NOT NULL,
+                            descripcion TEXT,
+                            fecha_evento DATE NOT NULL,
+                            hora_inicio TIME,
+                            hora_fin TIME,
+                            tipo_evento VARCHAR(50) DEFAULT 'cita',
+                            id_caso INTEGER,
+                            id_abogado VARCHAR(255),
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """)
+                    st.success("✅ Tabla 'eventos' creada")
+                
+                # Crear tabla tareas si no existe
+                if 'tareas' in missing_tables:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS tareas (
+                            id_tarea SERIAL PRIMARY KEY,
+                            titulo VARCHAR(255) NOT NULL,
+                            descripcion TEXT,
+                            prioridad VARCHAR(20) DEFAULT 'media',
+                            estado VARCHAR(20) DEFAULT 'pendiente',
+                            fecha_vencimiento DATE,
+                            tiempo_estimado DECIMAL(5,2),
+                            id_caso INTEGER,
+                            id_abogado VARCHAR(255),
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """)
+                    st.success("✅ Tabla 'tareas' creada")
+                
+                # Crear tabla notificaciones si no existe  
+                if 'notificaciones' in missing_tables:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS notificaciones (
+                            id_notificacion SERIAL PRIMARY KEY,
+                            titulo VARCHAR(255) NOT NULL,
+                            mensaje TEXT,
+                            tipo VARCHAR(50) DEFAULT 'info',
+                            leida BOOLEAN DEFAULT FALSE,
+                            id_usuario VARCHAR(255),
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """)
+                    st.success("✅ Tabla 'notificaciones' creada")
+                
+                conn.commit()
+                st.success("🎉 Todas las tablas faltantes han sido creadas exitosamente!")
+                
+    except Exception as e:
+        st.error(f"Error al crear tablas: {e}")
+        st.exception(e)
+
 def logout_user():
     """Cierra sesión del usuario"""
     try:
@@ -2198,6 +2264,10 @@ elif page == "📅 Agenda y Calendario":
             if st.form_submit_button("📅 Programar Evento", use_container_width=True):
                 if titulo_evento and fecha_evento:
                     try:
+                        # Convertir tipos numpy a tipos Python para evitar errores
+                        caso_id = int(caso_seleccionado) if caso_seleccionado is not None else None
+                        abogado_id = str(abogado_seleccionado) if abogado_seleccionado is not None else None
+                        
                         conn = init_db_connection()
                         if conn:
                             with conn.cursor() as cur:
@@ -2206,7 +2276,7 @@ elif page == "📅 Agenda y Calendario":
                                                        id_caso, id_abogado, tipo_evento)
                                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                                 """, (titulo_evento, descripcion_evento, fecha_evento, hora_inicio, 
-                                     hora_fin, caso_seleccionado, abogado_seleccionado, tipo_evento))
+                                     hora_fin, caso_id, abogado_id, tipo_evento))
                                 conn.commit()
                                 st.success("✅ Evento programado exitosamente!")
                                 st.rerun()
@@ -2539,18 +2609,22 @@ elif page == "📋 Tareas y Workflow":
             if st.form_submit_button("📋 Crear Tarea", use_container_width=True):
                 if titulo_tarea and fecha_vencimiento:
                     try:
+                        # Convertir tipos numpy a tipos Python para evitar errores
                         user_id = st.session_state.get('user_data', {}).get('id')
-                        asignado_a = user_id if not abogado_asignado else abogado_asignado
+                        caso_id = int(caso_relacionado) if caso_relacionado is not None else None
+                        abogado_id = str(abogado_asignado) if abogado_asignado is not None else None
+                        tiempo_horas = float(tiempo_estimado) if tiempo_estimado is not None else None
+                        asignado_a = user_id if not abogado_id else abogado_id
                         
                         conn = init_db_connection()
                         if conn:
                             with conn.cursor() as cur:
                                 cur.execute("""
                                     INSERT INTO tareas (titulo, descripcion, prioridad, fecha_vencimiento, 
-                                                      id_caso, id_abogado, creado_por, asignado_a, tiempo_estimado)
-                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                                      id_caso, id_abogado, tiempo_estimado)
+                                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                                 """, (titulo_tarea, descripcion_tarea, prioridad, fecha_vencimiento,
-                                     caso_relacionado, abogado_asignado, user_id, asignado_a, tiempo_estimado))
+                                     caso_id, abogado_id, tiempo_horas))
                                 conn.commit()
                                 st.success("✅ Tarea creada exitosamente!")
                                 st.rerun()
@@ -2879,6 +2953,43 @@ elif page == "🔧 Gestión de Usuarios":
                         st.warning("⚠️ Los roles no coinciden - presiona 'Refrescar Mi Rol'")
             except Exception as e:
                 st.warning(f"No se pudo verificar sincronización: {e}")
+        
+        # Verificación y creación de tablas
+        st.markdown("---")
+        st.markdown("**🗃️ Verificación de Tablas de Base de Datos**")
+        st.info("Verifica que todas las tablas necesarias existan")
+        
+        if st.button("🔍 Verificar Tablas", type="primary"):
+            try:
+                conn = init_db_connection()
+                if conn:
+                    with conn.cursor() as cur:
+                        # Verificar tablas existentes
+                        cur.execute("""
+                            SELECT table_name 
+                            FROM information_schema.tables 
+                            WHERE table_schema = 'public' 
+                            ORDER BY table_name
+                        """)
+                        existing_tables = [row[0] for row in cur.fetchall()]
+                        
+                        st.success(f"✅ Encontradas {len(existing_tables)} tablas:")
+                        st.write(", ".join(existing_tables))
+                        
+                        # Verificar tablas específicas necesarias
+                        required_tables = ['eventos', 'tareas', 'perfiles', 'casos', 'documentos', 'clientes', 'abogados']
+                        missing_tables = [table for table in required_tables if table not in existing_tables]
+                        
+                        if missing_tables:
+                            st.warning(f"⚠️ Tablas faltantes: {', '.join(missing_tables)}")
+                            
+                            if st.button("🔧 Crear Tablas Faltantes", type="secondary"):
+                                crear_tablas_faltantes(missing_tables)
+                        else:
+                            st.success("✅ Todas las tablas necesarias existen")
+                            
+            except Exception as e:
+                st.error(f"Error al verificar tablas: {e}")
         
         # Herramientas para migrar datos de tablas existentes
         st.markdown("---")
