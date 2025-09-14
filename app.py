@@ -56,9 +56,30 @@ def init_supabase_client():
 def init_supabase_auth_connection():
     """Inicializa la conexión a Supabase para autenticación usando st.connection"""
     try:
-        return st.connection("supabase", type=SupabaseConnection)
+        # Usar la configuración directamente de secrets
+        supabase_url = st.secrets["connections"]["supabase"]["url"]
+        supabase_key = st.secrets["connections"]["supabase"]["key"]
+        
+        # Crear la conexión pasando los parámetros explícitamente
+        return st.connection(
+            "supabase", 
+            type=SupabaseConnection,
+            url=supabase_url,
+            key=supabase_key
+        )
     except Exception as e:
         st.error(f"Error al conectar con Supabase para autenticación: {e}")
+        return None
+
+@st.cache_resource
+def init_supabase_direct():
+    """Conexión directa a Supabase como fallback"""
+    try:
+        supabase_url = st.secrets["connections"]["supabase"]["url"]
+        supabase_key = st.secrets["connections"]["supabase"]["key"]
+        return create_client(supabase_url, supabase_key)
+    except Exception as e:
+        st.error(f"Error en conexión directa a Supabase: {e}")
         return None
 
 # --- Funciones de Autenticación ---
@@ -95,12 +116,19 @@ def verify_jwt_token(token: str) -> dict:
 def register_user(email: str, password: str, nombre_completo: str) -> bool:
     """Registra un nuevo usuario en Supabase Auth y en la tabla perfiles"""
     try:
+        # Intentar con st.connection primero
         supabase_conn = init_supabase_auth_connection()
+        
+        # Si falla, usar conexión directa
         if not supabase_conn:
-            return False
+            supabase_client = init_supabase_direct()
+            if not supabase_client:
+                return False
+        else:
+            supabase_client = supabase_conn.client
         
         # Registrar en Supabase Auth
-        auth_response = supabase_conn.client.auth.sign_up({
+        auth_response = supabase_client.auth.sign_up({
             "email": email,
             "password": password
         })
@@ -115,7 +143,7 @@ def register_user(email: str, password: str, nombre_completo: str) -> bool:
                 "rol": "usuario"
             }
             
-            supabase_conn.client.table("perfiles").insert(profile_data).execute()
+            supabase_client.table("perfiles").insert(profile_data).execute()
             
             return True
         return False
@@ -127,12 +155,19 @@ def register_user(email: str, password: str, nombre_completo: str) -> bool:
 def login_user(email: str, password: str) -> dict:
     """Autentica usuario con Supabase Auth"""
     try:
+        # Intentar con st.connection primero
         supabase_conn = init_supabase_auth_connection()
+        
+        # Si falla, usar conexión directa
         if not supabase_conn:
-            return None
+            supabase_client = init_supabase_direct()
+            if not supabase_client:
+                return None
+        else:
+            supabase_client = supabase_conn.client
         
         # Intentar login con Supabase Auth
-        auth_response = supabase_conn.client.auth.sign_in_with_password({
+        auth_response = supabase_client.auth.sign_in_with_password({
             "email": email,
             "password": password
         })
@@ -141,7 +176,7 @@ def login_user(email: str, password: str) -> dict:
             user_id = auth_response.user.id
             
             # Obtener perfil del usuario
-            profile_response = supabase_conn.client.table("perfiles").select("*").eq("id", user_id).execute()
+            profile_response = supabase_client.table("perfiles").select("*").eq("id", user_id).execute()
             
             if profile_response.data:
                 profile = profile_response.data[0]
@@ -161,10 +196,18 @@ def login_user(email: str, password: str) -> dict:
 def logout_user():
     """Cierra sesión del usuario"""
     try:
+        # Intentar con st.connection primero
         supabase_conn = init_supabase_auth_connection()
-        if supabase_conn:
+        
+        # Si falla, usar conexión directa
+        if not supabase_conn:
+            supabase_client = init_supabase_direct()
+            if supabase_client:
+                supabase_client.auth.sign_out()
+        else:
             supabase_conn.client.auth.sign_out()
-    except:
+    except Exception as e:
+        # Ignorar errores de logout, limpiar session state de todas formas
         pass
     
     # Limpiar session state
@@ -1222,15 +1265,23 @@ elif page == "Mi Perfil":
                                     if nueva_password == confirmar_password:
                                         if len(nueva_password) >= 6:
                                             try:
+                                                # Intentar con st.connection primero
                                                 supabase_conn = init_supabase_auth_connection()
-                                                if supabase_conn:
-                                                    # Actualizar contraseña en Supabase Auth
-                                                    supabase_conn.client.auth.update_user({
-                                                        "password": nueva_password
-                                                    })
-                                                    st.success("✅ Contraseña actualizada exitosamente!")
+                                                
+                                                # Si falla, usar conexión directa
+                                                if not supabase_conn:
+                                                    supabase_client = init_supabase_direct()
+                                                    if not supabase_client:
+                                                        st.error("❌ No se pudo conectar al sistema de autenticación")
+                                                        return
                                                 else:
-                                                    st.error("❌ No se pudo conectar al sistema de autenticación")
+                                                    supabase_client = supabase_conn.client
+                                                
+                                                # Actualizar contraseña en Supabase Auth
+                                                supabase_client.auth.update_user({
+                                                    "password": nueva_password
+                                                })
+                                                st.success("✅ Contraseña actualizada exitosamente!")
                                             except Exception as e:
                                                 st.error(f"❌ Error al cambiar contraseña: {e}")
                                         else:

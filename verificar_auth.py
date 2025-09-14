@@ -31,6 +31,14 @@ def verificar_configuracion():
         # Verificar configuración de Supabase para autenticación
         supabase_config = st.secrets["connections"]["supabase"]
         st.success("✅ Configuración de Supabase Auth encontrada")
+        
+        # Verificar que sea la anon key (no service role)
+        key_info = supabase_config["key"]
+        if "anon" in key_info:
+            st.success("✅ Usando Anon Key (correcto para autenticación)")
+        elif "service_role" in key_info:
+            st.warning("⚠️ Usando Service Role Key - debería ser Anon Key para autenticación")
+        
         st.json({
             "url": supabase_config["url"],
             "key": supabase_config["key"][:20] + "..." if len(supabase_config["key"]) > 20 else supabase_config["key"]
@@ -41,9 +49,10 @@ def verificar_configuracion():
         **Solución**: Agregue la sección `[connections.supabase]` a sus secrets:
         ```toml
         [connections.supabase]
-        url = "https://tu-proyecto.supabase.co"
-        key = "tu_service_role_key"
+        url = "https://gxezyjgbghfwjhdjaegz.supabase.co"
+        key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd4ZXp5amdiZ2hmd2poZGphZWd6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTcyOTc4NzIsImV4cCI6MjA3Mjg3Mzg3Mn0.GVAY_lRRleQ2e0WnHk5EPZ7nVLosYgyKh_43VCGg_Mg"
         ```
+        **IMPORTANTE**: Use el Anon Key para autenticación, no el Service Role Key
         """)
     
     # Verificar conexión a base de datos
@@ -108,21 +117,41 @@ def verificar_configuracion():
         supabase_url = st.secrets["connections"]["supabase"]["url"]
         supabase_key = st.secrets["connections"]["supabase"]["key"]
         
+        # Probar conexión directa con supabase-py
         supabase = create_client(supabase_url, supabase_key)
         
-        # Intentar una operación simple
+        # Intentar una operación simple en la tabla perfiles
         response = supabase.table("perfiles").select("*").limit(1).execute()
         
         st.success("✅ Conexión a Supabase exitosa")
         st.info(f"Se pueden leer registros de la tabla perfiles: {len(response.data)} encontrados")
+        
+        # Probar conexión con st_supabase_connection
+        try:
+            from st_supabase_connection import SupabaseConnection
+            supabase_conn = st.connection(
+                "supabase_test",
+                type=SupabaseConnection,
+                url=supabase_url,
+                key=supabase_key
+            )
+            
+            # Probar que funcione la conexión
+            test_response = supabase_conn.client.table("perfiles").select("*").limit(1).execute()
+            st.success("✅ st.connection con Supabase funciona correctamente")
+            
+        except Exception as conn_error:
+            st.warning(f"⚠️ st.connection tiene problemas: {conn_error}")
+            st.markdown("**Nota**: La autenticación podría seguir funcionando con conexión directa")
         
     except Exception as e:
         st.error(f"❌ Error de conexión a Supabase: {e}")
         st.markdown("""
         **Posibles soluciones**:
         1. Verificar que la URL y key sean correctas
-        2. Usar Service Role Key en lugar de Anon Key
+        2. Verificar que esté usando el Anon Key para autenticación
         3. Verificar políticas RLS en Supabase
+        4. Comprobar que Supabase Auth esté habilitado
         """)
     
     # Verificar dependencias
