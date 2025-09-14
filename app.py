@@ -1014,7 +1014,15 @@ if has_permission("mi_perfil"):
     available_modules.append("👤 Mi Perfil")
 
 # Solo mostrar Gestión de Usuarios si es admin
-if has_permission("gestionar_roles"):
+# Solo mostrar Gestión de Usuarios si es admin O si es el primer usuario (bootstrap)
+bootstrap_access = False
+if 'user_data' in st.session_state and st.session_state.user_data:
+    user_email = st.session_state.user_data.get('email', '').lower()
+    # Permitir acceso al primer usuario registrado para bootstrap
+    if user_email in ['noe@gmail.com', 'noelia.cq28@gmail.com']:  # Emails de bootstrap
+        bootstrap_access = True
+
+if has_permission("gestionar_roles") or bootstrap_access:
     available_modules.append("🔧 Gestión de Usuarios")
 
 page = st.sidebar.radio("Módulos", available_modules, label_visibility="hidden")
@@ -1551,14 +1559,37 @@ elif page == "👤 Mi Perfil":
                     with col1:
                         if st.button("🔄 Recrear Perfil Automáticamente", use_container_width=True):
                             try:
-                                # Recrear perfil básico con información del usuario actual
-                                insert_query = "INSERT INTO perfiles (id, nombre_completo, rol) VALUES (%s, %s, %s)"
-                                cur.execute(insert_query, (user_id, user_data.get('email', 'Usuario'), 'cliente'))
+                                # Verificar que tenemos un user_id válido
+                                if not user_id:
+                                    st.error("❌ No se puede recrear el perfil: user_id es inválido")
+                                    st.json({"user_data": dict(user_data) if user_data else None})
+                                    return
+                                
+                                # Primero verificar si ya existe
+                                cur.execute("SELECT id FROM perfiles WHERE id = %s", (user_id,))
+                                exists = cur.fetchone()
+                                
+                                if exists:
+                                    st.warning("⚠️ El perfil ya existe, actualizando...")
+                                    update_query = "UPDATE perfiles SET nombre_completo = %s, rol = %s WHERE id = %s"
+                                    cur.execute(update_query, (user_data.get('nombre_completo', user_data.get('email', 'Usuario')), 'cliente', user_id))
+                                else:
+                                    # Crear nuevo perfil
+                                    insert_query = "INSERT INTO perfiles (id, nombre_completo, rol) VALUES (%s, %s, %s)"
+                                    nombre_para_perfil = user_data.get('nombre_completo') or user_data.get('email', 'Usuario')
+                                    cur.execute(insert_query, (user_id, nombre_para_perfil, 'cliente'))
+                                
                                 conn.commit()
-                                st.success("✅ Perfil recreado exitosamente!")
+                                
+                                # Actualizar datos en session state
+                                st.session_state.user_data['rol'] = 'cliente'
+                                
+                                st.success("✅ Perfil recreado/actualizado exitosamente!")
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"❌ Error al recrear perfil: {e}")
+                                st.code(f"User ID: {user_id}")
+                                st.code(f"User Data: {user_data}")
                     
                     with col2:
                         if st.button("🔍 Verificar Conexión DB", use_container_width=True):
@@ -2217,7 +2248,17 @@ elif page == "📋 Tareas y Workflow":
 # --- Página de Gestión de Usuarios (Solo Administradores) ---
 elif page == "🔧 Gestión de Usuarios":
     st.header("🔧 Gestión de Usuarios")
-    require_permission("gestionar_roles")
+    
+    # Verificar permisos o acceso bootstrap
+    user_email = st.session_state.get('user_data', {}).get('email', '').lower()
+    bootstrap_access = user_email in ['noe@gmail.com', 'noelia.cq28@gmail.com']
+    
+    if not (has_permission("gestionar_roles") or bootstrap_access):
+        st.error("🚫 No tienes permisos para acceder a esta funcionalidad")
+        st.stop()
+    
+    if bootstrap_access and not has_permission("gestionar_roles"):
+        st.warning("⚠️ Acceso especial de bootstrap detectado. Conviértete en administrador para acceso completo.")
     
     st.subheader("👥 Administración de Usuarios y Roles")
     
@@ -2225,7 +2266,7 @@ elif page == "🔧 Gestión de Usuarios":
     if not test_database_connection():
         st.stop()
     
-    tab1, tab2 = st.tabs(["👥 Lista de Usuarios", "➕ Crear Usuario"])
+    tab1, tab2, tab3 = st.tabs(["👥 Lista de Usuarios", "➕ Crear Usuario", "🔧 Herramientas Admin"])
     
     with tab1:
         st.subheader("Usuarios Registrados")
@@ -2286,3 +2327,89 @@ elif page == "🔧 Gestión de Usuarios":
         st.info("💡 Como administrador, puedes crear usuarios con cualquier rol")
         
         # Aquí se mostrará el formulario de registro con todas las opciones de rol
+        
+    with tab3:
+        st.subheader("🔧 Herramientas de Administración")
+        
+        # Botón para convertir usuarios existentes en admin
+        st.markdown("**⚡ Herramientas de Emergencia**")
+        st.warning("⚠️ Usar solo en caso de emergencia o configuración inicial")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**🚨 Convertir Usuario en Administrador**")
+            st.info("Si no hay administradores, puedes convertir un usuario existente")
+            
+            try:
+                # Obtener lista de usuarios
+                usuarios_para_admin = run_query("SELECT id, nombre_completo, rol FROM perfiles WHERE rol != 'administrador'")
+                
+                if not usuarios_para_admin.empty:
+                    usuario_seleccionado = st.selectbox(
+                        "Seleccionar usuario para convertir en admin:",
+                        range(len(usuarios_para_admin)),
+                        format_func=lambda x: f"{usuarios_para_admin.iloc[x]['nombre_completo']} ({usuarios_para_admin.iloc[x]['rol']})"
+                    )
+                    
+                    if st.button("🔧 Convertir en Administrador", type="primary"):
+                        try:
+                            usuario_id = usuarios_para_admin.iloc[usuario_seleccionado]['id']
+                            conn = init_db_connection()
+                            if conn:
+                                with conn.cursor() as cur:
+                                    cur.execute("UPDATE perfiles SET rol = 'administrador' WHERE id = %s", (usuario_id,))
+                                    conn.commit()
+                                    st.success("✅ Usuario convertido en administrador exitosamente!")
+                                    st.balloons()
+                                    st.rerun()
+                        except Exception as e:
+                            st.error(f"Error al convertir usuario: {e}")
+                else:
+                    st.warning("No hay usuarios no-admin para convertir")
+                    
+            except Exception as e:
+                st.error(f"Error al cargar usuarios: {e}")
+        
+        with col2:
+            st.markdown("**📊 Estadísticas del Sistema**")
+            
+            try:
+                # Contar usuarios por rol
+                stats = run_query("""
+                    SELECT rol, COUNT(*) as cantidad 
+                    FROM perfiles 
+                    GROUP BY rol 
+                    ORDER BY cantidad DESC
+                """)
+                
+                if not stats.empty:
+                    st.dataframe(stats, use_container_width=True)
+                else:
+                    st.info("No hay estadísticas disponibles")
+                    
+            except Exception as e:
+                st.error(f"Error al cargar estadísticas: {e}")
+        
+        # Herramienta para normalizar roles
+        st.markdown("---")
+        st.markdown("**🔄 Normalizar Roles del Sistema**")
+        st.info("Convierte roles antiguos ('usuario') a roles válidos del sistema")
+        
+        if st.button("🔄 Normalizar Todos los Roles", type="secondary"):
+            try:
+                conn = init_db_connection()
+                if conn:
+                    with conn.cursor() as cur:
+                        # Actualizar 'usuario' a 'cliente'
+                        cur.execute("UPDATE perfiles SET rol = 'cliente' WHERE rol = 'usuario'")
+                        rows_updated = cur.rowcount
+                        conn.commit()
+                        
+                        if rows_updated > 0:
+                            st.success(f"✅ Se normalizaron {rows_updated} usuarios del rol 'usuario' a 'cliente'")
+                        else:
+                            st.info("ℹ️ No se encontraron roles para normalizar")
+                        st.rerun()
+            except Exception as e:
+                st.error(f"Error al normalizar roles: {e}")
