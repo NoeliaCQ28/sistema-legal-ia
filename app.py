@@ -340,19 +340,11 @@ def refresh_user_data():
             
         user_data = st.session_state.get('user_data', {})
         
-        # Debug: mostrar contenido de user_data
-        st.info(f"🔍 Debug - User data keys: {list(user_data.keys())}")
-        st.json(user_data)
-        
-        user_id = user_data.get('id')
-        
         # Intentar obtener ID de diferentes maneras
-        if not user_id:
-            # Intentar con 'user_id' 
-            user_id = user_data.get('user_id')
+        user_id = user_data.get('id') or user_data.get('user_id')
         
+        # Intentar obtener desde auth token si existe
         if not user_id:
-            # Intentar obtener desde auth token si existe
             token = user_data.get('token')
             if token:
                 try:
@@ -363,11 +355,8 @@ def refresh_user_data():
                     pass
         
         if not user_id:
-            st.error(f"❌ No se encontró ID de usuario. Datos disponibles: {list(user_data.keys())}")
-            st.code(f"User data completo: {user_data}")
+            st.error(f"❌ No se encontró ID de usuario. Intente cerrar sesión y volver a iniciar.")
             return False
-            
-        st.info(f"🔍 Usando user_id: {user_id}")
             
         # Obtener datos actualizados del perfil
         conn = init_db_connection()
@@ -388,21 +377,11 @@ def refresh_user_data():
                     
                     # Log del cambio
                     if old_role != new_role:
-                        st.info(f"🔄 Rol actualizado: {old_role} → {new_role}")
+                        st.success(f"🔄 Rol actualizado: {old_role} → {new_role}")
                     
                     return True
                 else:
                     st.error(f"❌ No se encontró perfil para el usuario ID: {user_id}")
-                    
-                    # Buscar por email como fallback
-                    email = user_data.get('email')
-                    if email:
-                        cur.execute("SELECT id, nombre_completo, rol FROM perfiles WHERE nombre_completo ILIKE %s", (f"%{email}%",))
-                        perfil_email = cur.fetchone()
-                        if perfil_email:
-                            st.warning(f"⚠️ Encontrado perfil por email: {perfil_email}")
-                            return False
-                    
                     return False
         else:
             st.error("❌ No se pudo conectar a la base de datos")
@@ -410,7 +389,6 @@ def refresh_user_data():
         
     except Exception as e:
         st.error(f"Error al refrescar datos del usuario: {e}")
-        st.exception(e)  # Mostrar stack trace completo
         return False
 
 def migrar_clientes_a_perfiles():
@@ -1699,7 +1677,8 @@ elif page == "👤 Mi Perfil":
         st.stop()
     
     user_data = st.session_state.get('user_data', {})
-    user_id = user_data.get('id')
+    # Intentar obtener user_id de diferentes formas para compatibilidad
+    user_id = user_data.get('id') or user_data.get('user_id')
     
     # Obtener datos actuales del perfil
     try:
@@ -1829,14 +1808,16 @@ elif page == "👤 Mi Perfil":
                     with col1:
                         if st.button("🔄 Recrear Perfil Automáticamente", use_container_width=True):
                             try:
-                                # Verificar que tenemos un user_id válido
-                                if not user_id or user_id == "":
+                                # Verificar que tenemos un user_id válido usando la misma lógica que refresh_user_data
+                                user_id_para_perfil = user_data.get('id') or user_data.get('user_id')
+                                
+                                if not user_id_para_perfil or user_id_para_perfil == "":
                                     st.error("❌ No se puede recrear el perfil: user_id es inválido")
-                                    st.json({"user_data": dict(user_data) if user_data else None})
+                                    st.info("💡 Intente cerrar sesión y volver a iniciar")
                                     st.stop()
                                 
                                 # Primero verificar si ya existe
-                                cur.execute("SELECT id, rol FROM perfiles WHERE id = %s", (user_id,))
+                                cur.execute("SELECT id, rol FROM perfiles WHERE id = %s", (user_id_para_perfil,))
                                 exists = cur.fetchone()
                                 
                                 if exists:
@@ -1844,7 +1825,7 @@ elif page == "👤 Mi Perfil":
                                     # Mantener el rol existente si es administrador
                                     rol_actual = exists[1] if exists[1] in ['administrador', 'socio', 'abogado_senior', 'abogado_junior'] else 'cliente'
                                     update_query = "UPDATE perfiles SET nombre_completo = %s, rol = %s WHERE id = %s"
-                                    cur.execute(update_query, (user_data.get('nombre_completo', user_data.get('email', 'Usuario')), rol_actual, user_id))
+                                    cur.execute(update_query, (user_data.get('nombre_completo', user_data.get('email', 'Usuario')), rol_actual, user_id_para_perfil))
                                     rol_asignado = rol_actual
                                 else:
                                     # Crear nuevo perfil
@@ -1853,7 +1834,7 @@ elif page == "👤 Mi Perfil":
                                     # Dar rol admin a usuarios bootstrap
                                     user_email = user_data.get('email', '').lower()
                                     rol_asignado = 'administrador' if user_email in ['noe@gmail.com', 'noelia.cq28@gmail.com'] else 'cliente'
-                                    cur.execute(insert_query, (user_id, nombre_para_perfil, rol_asignado))
+                                    cur.execute(insert_query, (user_id_para_perfil, nombre_para_perfil, rol_asignado))
                                 
                                 conn.commit()
                                 
@@ -1864,7 +1845,7 @@ elif page == "👤 Mi Perfil":
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"❌ Error al recrear perfil: {e}")
-                                st.code(f"User ID: {user_id}")
+                                st.code(f"User ID intentado: {user_id_para_perfil if 'user_id_para_perfil' in locals() else 'No definido'}")
                                 st.code(f"User Data: {user_data}")
                     
                     with col2:
