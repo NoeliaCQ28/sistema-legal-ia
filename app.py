@@ -1563,7 +1563,7 @@ elif page == "👤 Mi Perfil":
                                 if not user_id:
                                     st.error("❌ No se puede recrear el perfil: user_id es inválido")
                                     st.json({"user_data": dict(user_data) if user_data else None})
-                                    return
+                                    st.stop()
                                 
                                 # Primero verificar si ya existe
                                 cur.execute("SELECT id FROM perfiles WHERE id = %s", (user_id,))
