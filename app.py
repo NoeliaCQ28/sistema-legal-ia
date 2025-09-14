@@ -391,12 +391,15 @@ def show_login_page():
     with tab1:
         st.subheader("Iniciar Sesión")
         with st.form("login_form"):
-            email = st.text_input("Email", key="login_email")
-            password = st.text_input("Contraseña", type="password", key="login_password")
+            email = st.text_input("📧 Email", key="login_email", placeholder="usuario@ejemplo.com")
+            password = st.text_input("🔒 Contraseña", type="password", key="login_password", placeholder="Ingrese su contraseña")
             
-            if st.form_submit_button("Iniciar Sesión", use_container_width=True):
+            # Botón de login con estilo
+            submit_login = st.form_submit_button("🚀 Iniciar Sesión", use_container_width=True, type="primary")
+            
+            if submit_login:
                 if email and password:
-                    with st.spinner("Verificando credenciales..."):
+                    with st.spinner("🔄 Verificando credenciales..."):
                         user_data = login_user(email, password)
                         
                         if user_data:
@@ -405,32 +408,39 @@ def show_login_page():
                             st.session_state.user_data = user_data
                             st.session_state.auth_token = user_data['token']
                             
-                            st.success(f"¡Bienvenido, {user_data['nombre_completo']}!")
+                            role_display = get_role_display_name(user_data.get('rol', 'cliente'))
+                            st.success(f"✅ ¡Bienvenido, {user_data['nombre_completo']}!\n\n{role_display}")
+                            st.balloons()  # Efecto visual
                             st.rerun()
                         else:
-                            st.error("Email o contraseña incorrectos")
+                            st.error("❌ Email o contraseña incorrectos")
                 else:
-                    st.error("Por favor, complete todos los campos")
+                    st.error("❌ Por favor, complete todos los campos")
     
     with tab2:
         st.subheader("Crear Cuenta Nueva")
         with st.form("register_form"):
-            reg_nombre = st.text_input("Nombre Completo", key="reg_nombre")
-            reg_email = st.text_input("Email", key="reg_email")
-            reg_password = st.text_input("Contraseña", type="password", key="reg_password")
-            reg_confirm_password = st.text_input("Confirmar Contraseña", type="password", key="reg_confirm")
+            # Campos básicos en dos columnas
+            col1, col2 = st.columns(2)
             
-            # Selección de rol (solo visible si hay un admin logueado o es el primer usuario)
+            with col1:
+                reg_nombre = st.text_input("Nombre Completo", key="reg_nombre")
+                reg_email = st.text_input("Email", key="reg_email")
+                
+            with col2:
+                reg_password = st.text_input("Contraseña", type="password", key="reg_password")
+                reg_confirm_password = st.text_input("Confirmar Contraseña", type="password", key="reg_confirm")
+            
+            # Selección de rol (solo visible si hay un admin logueado)
             reg_rol = "cliente"  # Por defecto
             
             # Verificar si el usuario actual es admin para permitir selección de rol
             current_user_is_admin = False
-            if 'user_data' in st.session_state:
+            if check_authentication() and 'user_data' in st.session_state and st.session_state.user_data:
                 current_role = st.session_state.user_data.get('rol', '').lower()
                 current_user_is_admin = current_role in ['administrador', 'admin']
             
             if current_user_is_admin:
-                st.markdown("---")
                 st.markdown("**🔐 Configuración de Rol (Solo Administradores)**")
                 role_options = get_available_roles()
                 role_labels = [get_role_display_name(role) for role in role_options]
@@ -445,23 +455,28 @@ def show_login_page():
             else:
                 st.info("💡 Las nuevas cuentas se crearán con rol de Cliente por defecto")
             
-            if st.form_submit_button("Registrarse", use_container_width=True):
+            # Botón de registro
+            submit_registro = st.form_submit_button("🚀 Registrarse", use_container_width=True, type="primary")
+            
+            # Procesar formulario
+            if submit_registro:
                 if all([reg_nombre, reg_email, reg_password, reg_confirm_password]):
                     if reg_password != reg_confirm_password:
-                        st.error("Las contraseñas no coinciden")
+                        st.error("❌ Las contraseñas no coinciden")
                     elif len(reg_password) < 6:
-                        st.error("La contraseña debe tener al menos 6 caracteres")
+                        st.error("❌ La contraseña debe tener al menos 6 caracteres")
                     else:
-                        with st.spinner("Creando cuenta..."):
+                        with st.spinner("🔄 Creando cuenta..."):
                             if register_user(reg_email, reg_password, reg_nombre, reg_rol):
-                                success_msg = f"¡Cuenta creada exitosamente como {get_role_display_name(reg_rol)}!"
+                                success_msg = f"✅ ¡Cuenta creada exitosamente como {get_role_display_name(reg_rol)}!"
                                 if not current_user_is_admin:
-                                    success_msg += " Revise su email para confirmar y luego inicie sesión."
+                                    success_msg += "\n\n📧 Revise su email para confirmar y luego inicie sesión."
                                 st.success(success_msg)
+                                st.balloons()  # Añadir efecto visual
                             else:
-                                st.error("Error al crear la cuenta. El email podría estar ya registrado.")
+                                st.error("❌ Error al crear la cuenta. El email podría estar ya registrado.")
                 else:
-                    st.error("Por favor, complete todos los campos")
+                    st.error("❌ Por favor, complete todos los campos")
 
 def show_user_info():
     """Muestra información del usuario en la sidebar"""
@@ -1529,17 +1544,36 @@ elif page == "👤 Mi Perfil":
                         st.warning("No se pudieron cargar las estadísticas")
                         
                 else:
-                    st.error("❌ No se encontró el perfil del usuario")
-                    if st.button("🔄 Recrear Perfil"):
-                        try:
-                            # Recrear perfil básico
-                            insert_query = "INSERT INTO perfiles (id, nombre_completo, rol) VALUES (%s, %s, %s)"
-                            cur.execute(insert_query, (user_id, user_data.get('email', 'Usuario'), 'usuario'))
-                            conn.commit()
-                            st.success("✅ Perfil recreado exitosamente!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ Error al recrear perfil: {e}")
+                    st.warning("⚠️ No se encontró el perfil del usuario en la base de datos")
+                    st.info("💡 Esto puede suceder si el perfil no se creó correctamente durante el registro")
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("🔄 Recrear Perfil Automáticamente", use_container_width=True):
+                            try:
+                                # Recrear perfil básico con información del usuario actual
+                                insert_query = "INSERT INTO perfiles (id, nombre_completo, rol) VALUES (%s, %s, %s)"
+                                cur.execute(insert_query, (user_id, user_data.get('email', 'Usuario'), 'cliente'))
+                                conn.commit()
+                                st.success("✅ Perfil recreado exitosamente!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ Error al recrear perfil: {e}")
+                    
+                    with col2:
+                        if st.button("🔍 Verificar Conexión DB", use_container_width=True):
+                            if test_database_connection():
+                                st.success("✅ Conexión a base de datos OK")
+                            else:
+                                st.error("❌ Problema de conexión a base de datos")
+                    
+                    # Mostrar información de debug
+                    with st.expander("🔧 Información de Debug", expanded=False):
+                        st.json({
+                            "user_id": user_id,
+                            "email": user_data.get('email', 'N/A'),
+                            "session_data": dict(user_data) if user_data else "No hay datos"
+                        })
     
     except Exception as e:
         st.error(f"❌ Error al cargar perfil: {e}")
