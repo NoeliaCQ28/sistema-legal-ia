@@ -396,9 +396,16 @@ def refresh_user_data():
                         'rol': new_role
                     })
                     
+                    # Asegurar que tenemos el ID correcto en ambos formatos para compatibilidad
+                    if user_id and 'id' not in st.session_state.user_data:
+                        st.session_state.user_data['id'] = user_id
+                    
                     # Log del cambio
                     if old_role != new_role:
                         st.success(f"🔄 Rol actualizado: {old_role} → {new_role}")
+                    
+                    # Debug: verificar actualización
+                    st.info(f"🔧 Debug: Session state actualizado con rol '{new_role}'")
                     
                     return True
                 else:
@@ -424,9 +431,16 @@ def refresh_user_data():
                             'rol': new_role
                         })
                         
+                        # Asegurar que tenemos el ID correcto en ambos formatos para compatibilidad
+                        if user_id and 'id' not in st.session_state.user_data:
+                            st.session_state.user_data['id'] = user_id
+                        
                         # Log del cambio
                         if old_role != new_role:
                             st.success(f"🔄 Rol actualizado: {old_role} → {new_role}")
+                        
+                        # Debug: verificar actualización
+                        st.info(f"🔧 Debug: Session state actualizado con rol '{new_role}' (PostgreSQL)")
                         
                         return True
                     else:
@@ -2764,14 +2778,41 @@ elif page == "🔧 Gestión de Usuarios":
         st.markdown("**🔄 Sincronizar Mi Rol Actual**")
         st.info("Actualiza tu rol en la sesión actual desde la base de datos")
         
-        col_sync1, col_sync2 = st.columns(2)
+        col_sync1, col_sync2, col_sync3 = st.columns(3)
         with col_sync1:
             if st.button("🔄 Refrescar Mi Rol", type="primary"):
+                # Forzar limpieza y recarga completa
+                st.info("🔄 Iniciando actualización completa...")
+                
                 if refresh_user_data():
                     st.success("✅ Rol actualizado exitosamente!")
+                    
+                    # Verificar que se actualizó correctamente
+                    updated_role = st.session_state.get('user_data', {}).get('rol', 'FALLO')
+                    st.info(f"✅ Nuevo rol confirmado: {updated_role}")
+                    
+                    # Forzar recarga de la página completa
                     st.rerun()
                 else:
                     st.error("❌ No se pudo actualizar el rol")
+        
+        with col_sync3:
+            # Botón de fuerza bruta
+            if st.button("💪 Forzar Admin", type="secondary", help="Fuerza el rol a administrador directamente"):
+                try:
+                    # Verificar que el usuario debe ser admin
+                    current_user_id = st.session_state.get('user_data', {}).get('id') or st.session_state.get('user_data', {}).get('user_id')
+                    current_email = st.session_state.get('user_data', {}).get('email', '').lower()
+                    
+                    if current_email in ['noe@gmail.com', 'noelia.cq28@gmail.com']:
+                        # Forzar actualización directa del session state
+                        st.session_state.user_data['rol'] = 'administrador'
+                        st.success("💪 Rol forzado a administrador!")
+                        st.rerun()
+                    else:
+                        st.error("❌ Solo usuarios autorizados pueden usar esta función")
+                except Exception as e:
+                    st.error(f"Error: {e}")
         
         with col_sync2:
             # Mostrar rol actual vs rol en BD
