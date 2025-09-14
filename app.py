@@ -335,12 +335,14 @@ def refresh_user_data():
     """Refresca los datos del usuario desde la base de datos"""
     try:
         if not st.session_state.get('authenticated', False):
+            st.warning("⚠️ Usuario no autenticado")
             return False
             
         user_data = st.session_state.get('user_data', {})
         user_id = user_data.get('id')
         
         if not user_id:
+            st.error("❌ No se encontró ID de usuario en session state")
             return False
             
         # Obtener datos actualizados del perfil
@@ -352,12 +354,25 @@ def refresh_user_data():
                 
                 if perfil:
                     # Actualizar session state con datos frescos
+                    old_role = st.session_state.user_data.get('rol', 'N/A')
+                    new_role = perfil[1]
+                    
                     st.session_state.user_data.update({
                         'nombre_completo': perfil[0],
-                        'rol': perfil[1]
+                        'rol': new_role
                     })
+                    
+                    # Log del cambio
+                    if old_role != new_role:
+                        st.info(f"🔄 Rol actualizado: {old_role} → {new_role}")
+                    
                     return True
-        return False
+                else:
+                    st.error(f"❌ No se encontró perfil para el usuario ID: {user_id}")
+                    return False
+        else:
+            st.error("❌ No se pudo conectar a la base de datos")
+            return False
         
     except Exception as e:
         st.error(f"Error al refrescar datos del usuario: {e}")
@@ -367,45 +382,67 @@ def migrar_clientes_a_perfiles():
     """Migra datos de la tabla clientes a perfiles con rol cliente"""
     try:
         conn = init_db_connection()
-        if conn:
+        supabase_client = init_supabase_direct()
+        
+        if conn and supabase_client:
             with conn.cursor() as cur:
                 # Obtener clientes que no tienen perfil
                 cur.execute("""
                     SELECT c.id_cliente, c.nombre, c.apellido, c.email 
                     FROM clientes c 
                     WHERE c.email IS NOT NULL 
-                    LIMIT 20
+                    AND c.email NOT IN (
+                        SELECT COALESCE(nombre_completo, '') FROM perfiles 
+                        WHERE nombre_completo ILIKE '%' || c.email || '%'
+                    )
+                    LIMIT 10
                 """)
                 clientes = cur.fetchall()
                 
                 migrados = 0
                 errores = 0
+                
                 for cliente in clientes:
                     try:
-                        # Verificar si ya existe un perfil con este email
-                        cur.execute("SELECT id FROM perfiles WHERE nombre_completo ILIKE %s", (f"%{cliente[3]}%",))
-                        if cur.fetchone():
-                            continue  # Ya existe
+                        email = cliente[3].strip().lower()
+                        nombre_completo = f"{cliente[1]} {cliente[2]}" if cliente[1] and cliente[2] else email
                         
-                        # Generar nombre completo
-                        nombre_completo = f"{cliente[1]} {cliente[2]}" if cliente[1] and cliente[2] else cliente[3]
+                        # Crear usuario en Supabase Auth con contraseña por defecto
+                        auth_response = supabase_client.auth.admin.create_user({
+                            "email": email,
+                            "password": "1234567",
+                            "email_confirm": True
+                        })
                         
-                        # Insertar en perfiles (sin ID de auth por ahora)
-                        cur.execute("""
-                            INSERT INTO perfiles (id, nombre_completo, rol) 
-                            VALUES (gen_random_uuid()::text, %s, 'cliente')
-                        """, (nombre_completo,))
-                        migrados += 1
+                        if auth_response.user:
+                            user_id = auth_response.user.id
+                            
+                            # Crear perfil en la tabla perfiles
+                            cur.execute("""
+                                INSERT INTO perfiles (id, nombre_completo, rol) 
+                                VALUES (%s, %s, 'cliente')
+                                ON CONFLICT (id) DO UPDATE SET 
+                                nombre_completo = EXCLUDED.nombre_completo,
+                                rol = 'cliente'
+                            """, (user_id, nombre_completo))
+                            
+                            migrados += 1
+                            st.success(f"✅ Migrado: {nombre_completo} ({email})")
+                        
                     except Exception as e:
                         errores += 1
+                        st.warning(f"⚠️ Error con {cliente[3]}: {str(e)[:100]}")
                         continue
                 
                 conn.commit()
-                st.success(f"✅ Se migraron {migrados} clientes a perfiles")
+                
+                if migrados > 0:
+                    st.success(f"🎉 Se migraron {migrados} clientes exitosamente")
+                    st.info("🔑 Contraseña por defecto: **1234567**")
+                    st.info("💡 Los usuarios pueden cambiar su contraseña al iniciar sesión")
+                
                 if errores > 0:
                     st.warning(f"⚠️ {errores} clientes no se pudieron migrar")
-                if migrados > 0:
-                    st.info("💡 Los clientes migrados necesitarán registrarse para obtener credenciales de acceso")
                 
     except Exception as e:
         st.error(f"Error en migración de clientes: {e}")
@@ -414,47 +451,69 @@ def migrar_abogados_a_perfiles():
     """Migra datos de la tabla abogados a perfiles con rol abogado_junior"""
     try:
         conn = init_db_connection()
-        if conn:
+        supabase_client = init_supabase_direct()
+        
+        if conn and supabase_client:
             with conn.cursor() as cur:
                 # Obtener abogados que no tienen perfil
                 cur.execute("""
                     SELECT a.id_abogado, a.nombre, a.apellido, a.email, a.especialidad 
                     FROM abogados a 
                     WHERE a.email IS NOT NULL 
-                    LIMIT 20
+                    AND a.email NOT IN (
+                        SELECT COALESCE(nombre_completo, '') FROM perfiles 
+                        WHERE nombre_completo ILIKE '%' || a.email || '%'
+                    )
+                    LIMIT 10
                 """)
                 abogados = cur.fetchall()
                 
                 migrados = 0
                 errores = 0
+                
                 for abogado in abogados:
                     try:
-                        # Verificar si ya existe un perfil con este email
-                        cur.execute("SELECT id FROM perfiles WHERE nombre_completo ILIKE %s", (f"%{abogado[3]}%",))
-                        if cur.fetchone():
-                            continue  # Ya existe
-                        
-                        # Generar nombre completo
-                        nombre_completo = f"{abogado[1]} {abogado[2]}" if abogado[1] and abogado[2] else abogado[3]
+                        email = abogado[3].strip().lower()
+                        nombre_completo = f"{abogado[1]} {abogado[2]}" if abogado[1] and abogado[2] else email
                         if abogado[4]:  # especialidad
                             nombre_completo += f" - {abogado[4]}"
                         
-                        # Insertar en perfiles
-                        cur.execute("""
-                            INSERT INTO perfiles (id, nombre_completo, rol) 
-                            VALUES (gen_random_uuid()::text, %s, 'abogado_junior')
-                        """, (nombre_completo,))
-                        migrados += 1
+                        # Crear usuario en Supabase Auth con contraseña por defecto
+                        auth_response = supabase_client.auth.admin.create_user({
+                            "email": email,
+                            "password": "1234567",
+                            "email_confirm": True
+                        })
+                        
+                        if auth_response.user:
+                            user_id = auth_response.user.id
+                            
+                            # Crear perfil en la tabla perfiles
+                            cur.execute("""
+                                INSERT INTO perfiles (id, nombre_completo, rol) 
+                                VALUES (%s, %s, 'abogado_junior')
+                                ON CONFLICT (id) DO UPDATE SET 
+                                nombre_completo = EXCLUDED.nombre_completo,
+                                rol = 'abogado_junior'
+                            """, (user_id, nombre_completo))
+                            
+                            migrados += 1
+                            st.success(f"✅ Migrado: {nombre_completo} ({email})")
+                        
                     except Exception as e:
                         errores += 1
+                        st.warning(f"⚠️ Error con {abogado[3]}: {str(e)[:100]}")
                         continue
                 
                 conn.commit()
-                st.success(f"✅ Se migraron {migrados} abogados a perfiles")
+                
+                if migrados > 0:
+                    st.success(f"🎉 Se migraron {migrados} abogados exitosamente")
+                    st.info("🔑 Contraseña por defecto: **1234567**")
+                    st.info("💡 Los usuarios pueden cambiar su contraseña al iniciar sesión")
+                
                 if errores > 0:
                     st.warning(f"⚠️ {errores} abogados no se pudieron migrar")
-                if migrados > 0:
-                    st.info("💡 Los abogados migrados necesitarán registrarse para obtener credenciales de acceso")
                 
     except Exception as e:
         st.error(f"Error en migración de abogados: {e}")
@@ -2553,6 +2612,41 @@ elif page == "🔧 Gestión de Usuarios":
                         st.rerun()
             except Exception as e:
                 st.error(f"Error al normalizar roles: {e}")
+        
+        # Herramienta para sincronizar rol actual
+        st.markdown("---")
+        st.markdown("**🔄 Sincronizar Mi Rol Actual**")
+        st.info("Actualiza tu rol en la sesión actual desde la base de datos")
+        
+        col_sync1, col_sync2 = st.columns(2)
+        with col_sync1:
+            if st.button("🔄 Refrescar Mi Rol", type="primary"):
+                if refresh_user_data():
+                    st.success("✅ Rol actualizado exitosamente!")
+                    st.rerun()
+                else:
+                    st.error("❌ No se pudo actualizar el rol")
+        
+        with col_sync2:
+            # Mostrar rol actual vs rol en BD
+            try:
+                current_user_id = st.session_state.get('user_data', {}).get('id')
+                session_role = st.session_state.get('user_data', {}).get('rol', 'N/A')
+                
+                conn = init_db_connection()
+                if conn and current_user_id:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT rol FROM perfiles WHERE id = %s", (current_user_id,))
+                        db_role = cur.fetchone()
+                        db_role = db_role[0] if db_role else 'N/A'
+                        
+                        st.info(f"**Sesión:** {session_role}")
+                        st.info(f"**Base de Datos:** {db_role}")
+                        
+                        if session_role != db_role:
+                            st.warning("⚠️ Los roles no coinciden - presiona 'Refrescar Mi Rol'")
+            except Exception as e:
+                st.warning(f"No se pudo verificar sincronización: {e}")
         
         # Herramientas para migrar datos de tablas existentes
         st.markdown("---")
