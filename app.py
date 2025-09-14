@@ -339,11 +339,35 @@ def refresh_user_data():
             return False
             
         user_data = st.session_state.get('user_data', {})
+        
+        # Debug: mostrar contenido de user_data
+        st.info(f"🔍 Debug - User data keys: {list(user_data.keys())}")
+        st.json(user_data)
+        
         user_id = user_data.get('id')
         
+        # Intentar obtener ID de diferentes maneras
         if not user_id:
-            st.error("❌ No se encontró ID de usuario en session state")
+            # Intentar con 'user_id' 
+            user_id = user_data.get('user_id')
+        
+        if not user_id:
+            # Intentar obtener desde auth token si existe
+            token = user_data.get('token')
+            if token:
+                try:
+                    import jwt
+                    decoded = jwt.decode(token, options={"verify_signature": False})
+                    user_id = decoded.get('user_id') or decoded.get('sub')
+                except:
+                    pass
+        
+        if not user_id:
+            st.error(f"❌ No se encontró ID de usuario. Datos disponibles: {list(user_data.keys())}")
+            st.code(f"User data completo: {user_data}")
             return False
+            
+        st.info(f"🔍 Usando user_id: {user_id}")
             
         # Obtener datos actualizados del perfil
         conn = init_db_connection()
@@ -369,6 +393,16 @@ def refresh_user_data():
                     return True
                 else:
                     st.error(f"❌ No se encontró perfil para el usuario ID: {user_id}")
+                    
+                    # Buscar por email como fallback
+                    email = user_data.get('email')
+                    if email:
+                        cur.execute("SELECT id, nombre_completo, rol FROM perfiles WHERE nombre_completo ILIKE %s", (f"%{email}%",))
+                        perfil_email = cur.fetchone()
+                        if perfil_email:
+                            st.warning(f"⚠️ Encontrado perfil por email: {perfil_email}")
+                            return False
+                    
                     return False
         else:
             st.error("❌ No se pudo conectar a la base de datos")
@@ -376,13 +410,22 @@ def refresh_user_data():
         
     except Exception as e:
         st.error(f"Error al refrescar datos del usuario: {e}")
+        st.exception(e)  # Mostrar stack trace completo
         return False
 
 def migrar_clientes_a_perfiles():
     """Migra datos de la tabla clientes a perfiles con rol cliente"""
     try:
         conn = init_db_connection()
-        supabase_client = init_supabase_direct()
+        
+        # Usar la conexión de servicio para operaciones admin
+        try:
+            supabase_url = st.secrets["supabase"]["url"]
+            supabase_service_key = st.secrets["supabase"]["service_role_key"]
+            supabase_client = create_client(supabase_url, supabase_service_key)
+        except Exception as e:
+            st.error(f"Error al conectar con Supabase como admin: {e}")
+            return
         
         if conn and supabase_client:
             with conn.cursor() as cur:
@@ -395,17 +438,25 @@ def migrar_clientes_a_perfiles():
                         SELECT COALESCE(nombre_completo, '') FROM perfiles 
                         WHERE nombre_completo ILIKE '%' || c.email || '%'
                     )
-                    LIMIT 10
+                    LIMIT 5
                 """)
                 clientes = cur.fetchall()
+                
+                if not clientes:
+                    st.info("ℹ️ No hay clientes nuevos para migrar")
+                    return
                 
                 migrados = 0
                 errores = 0
                 
+                st.info(f"🔄 Intentando migrar {len(clientes)} clientes...")
+                
                 for cliente in clientes:
                     try:
                         email = cliente[3].strip().lower()
-                        nombre_completo = f"{cliente[1]} {cliente[2]}" if cliente[1] and cliente[2] else email
+                        nombre_completo = f"{cliente[1]} {cliente[2]}" if cliente[1] and cliente[2] else f"Cliente {email}"
+                        
+                        st.info(f"📝 Procesando: {nombre_completo} ({email})")
                         
                         # Crear usuario en Supabase Auth con contraseña por defecto
                         auth_response = supabase_client.auth.admin.create_user({
@@ -428,10 +479,17 @@ def migrar_clientes_a_perfiles():
                             
                             migrados += 1
                             st.success(f"✅ Migrado: {nombre_completo} ({email})")
+                        else:
+                            st.warning(f"⚠️ No se pudo crear usuario para {email}")
+                            errores += 1
                         
                     except Exception as e:
                         errores += 1
-                        st.warning(f"⚠️ Error con {cliente[3]}: {str(e)[:100]}")
+                        error_msg = str(e)
+                        if "User already registered" in error_msg:
+                            st.warning(f"⚠️ {email} ya está registrado")
+                        else:
+                            st.warning(f"⚠️ Error con {cliente[3]}: {error_msg[:100]}")
                         continue
                 
                 conn.commit()
@@ -446,12 +504,21 @@ def migrar_clientes_a_perfiles():
                 
     except Exception as e:
         st.error(f"Error en migración de clientes: {e}")
+        st.exception(e)
 
 def migrar_abogados_a_perfiles():
     """Migra datos de la tabla abogados a perfiles con rol abogado_junior"""
     try:
         conn = init_db_connection()
-        supabase_client = init_supabase_direct()
+        
+        # Usar la conexión de servicio para operaciones admin
+        try:
+            supabase_url = st.secrets["supabase"]["url"]
+            supabase_service_key = st.secrets["supabase"]["service_role_key"]
+            supabase_client = create_client(supabase_url, supabase_service_key)
+        except Exception as e:
+            st.error(f"Error al conectar con Supabase como admin: {e}")
+            return
         
         if conn and supabase_client:
             with conn.cursor() as cur:
@@ -464,19 +531,27 @@ def migrar_abogados_a_perfiles():
                         SELECT COALESCE(nombre_completo, '') FROM perfiles 
                         WHERE nombre_completo ILIKE '%' || a.email || '%'
                     )
-                    LIMIT 10
+                    LIMIT 5
                 """)
                 abogados = cur.fetchall()
+                
+                if not abogados:
+                    st.info("ℹ️ No hay abogados nuevos para migrar")
+                    return
                 
                 migrados = 0
                 errores = 0
                 
+                st.info(f"🔄 Intentando migrar {len(abogados)} abogados...")
+                
                 for abogado in abogados:
                     try:
                         email = abogado[3].strip().lower()
-                        nombre_completo = f"{abogado[1]} {abogado[2]}" if abogado[1] and abogado[2] else email
+                        nombre_completo = f"{abogado[1]} {abogado[2]}" if abogado[1] and abogado[2] else f"Abogado {email}"
                         if abogado[4]:  # especialidad
                             nombre_completo += f" - {abogado[4]}"
+                        
+                        st.info(f"📝 Procesando: {nombre_completo} ({email})")
                         
                         # Crear usuario en Supabase Auth con contraseña por defecto
                         auth_response = supabase_client.auth.admin.create_user({
@@ -499,10 +574,17 @@ def migrar_abogados_a_perfiles():
                             
                             migrados += 1
                             st.success(f"✅ Migrado: {nombre_completo} ({email})")
+                        else:
+                            st.warning(f"⚠️ No se pudo crear usuario para {email}")
+                            errores += 1
                         
                     except Exception as e:
                         errores += 1
-                        st.warning(f"⚠️ Error con {abogado[3]}: {str(e)[:100]}")
+                        error_msg = str(e)
+                        if "User already registered" in error_msg:
+                            st.warning(f"⚠️ {email} ya está registrado")
+                        else:
+                            st.warning(f"⚠️ Error con {abogado[3]}: {error_msg[:100]}")
                         continue
                 
                 conn.commit()
@@ -517,6 +599,7 @@ def migrar_abogados_a_perfiles():
                 
     except Exception as e:
         st.error(f"Error en migración de abogados: {e}")
+        st.exception(e)
 
 def logout_user():
     """Cierra sesión del usuario"""
